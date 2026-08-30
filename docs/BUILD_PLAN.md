@@ -16,44 +16,49 @@ The source repository remains intact as a separate project. This project keeps i
 
 ## Phase 0A: Source Harness Extraction and Generalization
 
+Status: complete. See `PHASE_0A_SOURCE_AUDIT.md`,
+`PHASE_0A_MIGRATION_MATRIX.md`, and `architecture.md` for the evidence and
+scope decisions.
+
 ### Objective
 Inspect https://github.com/etimbukafia/ai-assistant-harness, identify which concepts are reusable, and port only the parts that belong in a general enterprise-agent runtime.
 
 This is a code and architecture fork. It is not a literal GitHub fork.
 
 ### Tasks
-- [ ] Fetch and inspect https://github.com/etimbukafia/ai-assistant-harness before implementation starts.
-- [ ] Audit every source module in that repository.
-- [ ] Classify each module or abstraction as `reuse mostly unchanged`, `generalize`, `redesign`, or `do not carry forward`.
-- [ ] Create and maintain a migration matrix from source modules to enterprise-harness destinations.
-- [ ] Extract the provider-neutral provider adapter pattern.
-- [ ] Extract and generalize `ToolDefinition` and typed tool-result contracts.
-- [ ] Extract the `PermissionBroker` pattern and preserve the rule that model output cannot grant authority.
-- [ ] Extract bounded execution-loop logic and remove assumptions that execution is only conversational.
-- [ ] Extract trusted versus untrusted context separation.
-- [ ] Extract audit-event and structured trace patterns.
-- [ ] Extract deterministic safety and prompt-injection handling where it generalizes.
-- [ ] Extract state/session patterns that remain useful outside conversational assistants.
-- [ ] Extract verification concepts that apply to general agent outcomes.
-- [ ] Extract provider conformance-test patterns.
-- [ ] Extract only the runtime-facing evaluation contracts needed for trace/replay interoperability.
-- [ ] Move full evaluation and improvement responsibility out of the harness boundary. Keep only runtime conformance and export contracts.
-- [ ] Remove the assumption that agents primarily answer questions.
-- [ ] Remove the assumption that tools are read-only.
-- [ ] Replace assistant response-state concepts with general agent outcome concepts where needed.
-- [ ] Preserve provenance in architecture notes so reused concepts remain traceable to the source repository.
-- [ ] Add parity tests for any behavior intentionally ported from the source repository.
-- [ ] Do not copy code that is specific to citation-heavy conversational assistants unless the concept remains useful in the broader runtime.
+- [x] Fetch and inspect https://github.com/etimbukafia/ai-assistant-harness before implementation starts.
+- [x] Audit every source module in that repository.
+- [x] Classify each module or abstraction as `reuse mostly unchanged`, `generalize`, `redesign`, or `do not carry forward`.
+- [x] Create and maintain a migration matrix from source modules to enterprise-harness destinations.
+- [x] Extract the provider-neutral provider adapter pattern.
+- [x] Extract and generalize `ToolDefinition` and typed tool-result contracts.
+- [x] Extract the `PermissionBroker` pattern and preserve the rule that model output cannot grant authority.
+- [x] Extract bounded execution-loop logic and remove assumptions that execution is only conversational.
+- [x] Extract trusted versus untrusted context separation.
+- [x] Extract audit-event and structured trace patterns.
+- [x] Extract deterministic safety and prompt-injection handling where it generalizes.
+- [x] Extract state/session patterns that remain useful outside conversational assistants.
+- [x] Extract verification concepts that apply to general agent outcomes.
+- [x] Extract provider conformance-test patterns.
+- [x] Extract only the runtime-facing evaluation contracts needed for trace/replay interoperability.
+- [x] Move full evaluation and improvement responsibility out of the harness boundary. Keep only runtime conformance and export contracts.
+- [x] Remove the assumption that agents primarily answer questions.
+- [x] Remove the assumption that tools are read-only.
+- [x] Replace assistant response-state concepts with general agent outcome concepts where needed.
+- [x] Preserve provenance in architecture notes so reused concepts remain traceable to the source repository.
+- [x] Add parity tests for any behavior intentionally ported from the source repository.
+- [x] Do not copy code that is specific to citation-heavy conversational assistants unless the concept remains useful in the broader runtime.
 
 ### Initial migration matrix
 
 | Source module | Enterprise Agent Harness destination | Action |
 | --- | --- | --- |
 | `providers.py` | `providers/` | Generalize |
-| `tools.py` | `tools/` | Generalize heavily for read/write/action tools |
-| `permission.py` | `governance/permissions.py` | Reuse and generalize |
+| `tools.py` | `tools/` | Generalize |
+| `contracts.py` | `contracts.py` | Redesign around agent execution contracts |
+| `permission.py` | `governance/permissions.py` | Generalize |
 | `loops.py` | `runtime/execution.py` | Generalize beyond conversation turns |
-| `audit.py` | `observability/audit.py` | Reuse and generalize |
+| `audit.py` | `observability/audit.py` | Generalize |
 | `rules.py` | `governance/safety.py` | Generalize |
 | `context.py` | `runtime/context.py` | Reuse trusted/untrusted context concepts |
 | `state.py` | `state/` | Generalize |
@@ -62,8 +67,9 @@ This is a code and architecture fork. It is not a literal GitHub fork.
 | `verification.py` | `verification/` | Generalize beyond citations and response sections |
 | `recovery.py` | `runtime/outcomes.py` | Redesign around enterprise-agent outcomes |
 | `harness.py` | `runtime/` | Redesign around general enterprise execution |
-| `evaluation_contracts.py` | runtime trace/replay contracts | Reuse selectively |
+| `evaluation_contracts.py` | runtime trace/replay contracts | Generalize |
 | `evals.py` | external evaluation system | Do not port full evaluation ownership |
+| `__init__.py` | `__init__.py` | Redesign public exports |
 
 ### Exit criteria
 - Every source module has an explicit migration decision.
@@ -76,22 +82,26 @@ This is a code and architecture fork. It is not a literal GitHub fork.
 
 ## Phase 0B: Architecture Baseline
 
+Status: complete. See `product-brief.md`, `architecture.md`,
+`public-api.md`, `development.md`, and `adr/` for the baseline decisions and
+quality workflow.
+
 ### Objective
 Define the system boundaries, invariants, and package structure before implementation.
 
 ### Tasks
-- [ ] Write the product brief and explicit non-goals.
-- [ ] Define the trust model: model output is untrusted proposal data, application policy is authoritative.
-- [ ] Define the execution model for read tools, write tools, background actions, and approval-gated actions.
-- [ ] Define the agent lifecycle: draft, validated, active, suspended, retired.
-- [ ] Define versioning rules for agents, tools, capabilities, policies, and runtime contracts.
-- [ ] Decide which concepts are runtime-owned versus consumer-owned.
-- [ ] Define the minimum stable public API.
-- [ ] Create ADRs for provider neutrality, policy ownership, registry design, and trace contracts.
-- [ ] Establish `src/` package layout, test layout, linting, typing, and CI.
+- [x] Write the product brief and explicit non-goals.
+- [x] Define the trust model: model output is untrusted proposal data, application policy is authoritative.
+- [x] Define the execution model for read tools, write tools, background actions, and approval-gated actions.
+- [x] Define the agent lifecycle: draft, validated, active, suspended, retired.
+- [x] Define versioning rules for agents, tools, capabilities, policies, and runtime contracts.
+- [x] Decide which concepts are runtime-owned versus consumer-owned.
+- [x] Define the minimum stable public API.
+- [x] Create ADRs for provider neutrality, policy ownership, registry design, and trace contracts.
+- [x] Establish `src/` package layout, test layout, linting, typing, and CI.
 
 ### Exit criteria
-- Architecture document approved.
+- Architecture document approved for the Phase 0B baseline.
 - Core invariants are explicit.
 - Package skeleton and quality workflow exist.
 
@@ -99,49 +109,55 @@ Define the system boundaries, invariants, and package structure before implement
 
 ## Phase 1: Core Contracts and Type System
 
+Status: complete. Evidence: `contracts.py`, `errors.py`, typed contract tests
+in `tests/test_phase_1_contracts.py`, and the quality workflow.
+
 ### Objective
 Create the typed contracts that every other module depends on.
 
 ### Tasks
-- [ ] Implement `AgentDefinition`.
-- [ ] Implement `AgentVersion` and immutable version identity.
-- [ ] Implement `CapabilityDefinition`.
-- [ ] Implement `ToolDefinition` with typed input/output schemas.
-- [ ] Implement `PolicyDefinition`.
-- [ ] Implement `PrincipalContext`.
-- [ ] Implement `ExecutionContext`.
-- [ ] Implement `ActionProposal`, `ToolCall`, and `ToolResult`.
-- [ ] Implement `ApprovalRequest` and `ApprovalDecision`.
-- [ ] Implement standardized `AgentOutcome` states.
-- [ ] Define error taxonomy for policy denial, validation failure, tool failure, provider failure, timeout, and cancellation.
-- [ ] Add serialization and validation tests.
+- [x] Implement `AgentDefinition`.
+- [x] Implement `AgentVersion` and immutable version identity.
+- [x] Implement `CapabilityDefinition`.
+- [x] Implement `ToolDefinition` with typed input/output schemas.
+- [x] Implement `PolicyDefinition`.
+- [x] Implement `PrincipalContext`.
+- [x] Implement `ExecutionContext`.
+- [x] Implement `ActionProposal`, `ToolCall`, and `ToolResult`.
+- [x] Implement `ApprovalRequest` and `ApprovalDecision`.
+- [x] Implement standardized `AgentOutcome` states.
+- [x] Define error taxonomy for policy denial, validation failure, tool failure, provider failure, timeout, and cancellation.
+- [x] Add serialization and validation tests.
 
 ### Exit criteria
-- All core entities can round-trip through JSON.
-- Invalid contracts fail deterministically.
-- No runtime logic depends on provider-specific types.
+- [x] All core entities can round-trip through JSON.
+- [x] Invalid contracts fail deterministically.
+- [x] No runtime logic depends on provider-specific types.
 
 ---
 
 ## Phase 2: Provider Abstraction
 
+Status: complete. Evidence: `providers/`, provider-boundary tests in
+`tests/test_phase_2_providers.py`, and the quality workflow.
+
 ### Objective
 Keep models replaceable and prevent provider behavior from leaking into runtime policy.
 
 ### Tasks
-- [ ] Define a `ProviderAdapter` interface.
-- [ ] Define request/response contracts for interpretation, planning, and response composition.
-- [ ] Add a deterministic fake provider for tests.
-- [ ] Add one real provider adapter behind an optional dependency.
-- [ ] Normalize tool-call proposals across providers.
-- [ ] Add structured-output validation.
-- [ ] Add provider timeout and retry policy hooks.
-- [ ] Record token, latency, and model metadata in traces.
-- [ ] Add provider conformance tests.
+- [x] Define a `ProviderAdapter` interface.
+- [x] Define request/response contracts for interpretation, planning, and response composition.
+- [x] Add a deterministic fake provider for tests.
+- [x] Add one real provider adapter behind an optional dependency.
+- [x] Normalize tool-call proposals across providers.
+- [x] Add structured-output validation.
+- [x] Add provider timeout and retry policy hooks.
+- [x] Record token, latency, and model metadata in traces.
+- [x] Add provider conformance tests.
 
 ### Exit criteria
-- Runtime tests pass with the fake provider only.
-- Swapping providers does not alter permission or policy behavior.
+- [x] Runtime tests pass with the fake provider only.
+- [x] Swapping providers does not alter permission or policy behavior.
 
 ---
 
