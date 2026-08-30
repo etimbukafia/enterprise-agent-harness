@@ -6,7 +6,7 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from inspect import Parameter, signature
 from threading import RLock
 from typing import cast
@@ -14,8 +14,13 @@ from uuid import uuid4
 
 from ..capabilities import CapabilityDefinition
 from ..contracts import (
+    ActionProposal,
     AgentOutcome,
     AgentPlan,
+    ApprovalDecision,
+    ApprovalDecisionStatus,
+    ApprovalPolicyDecision,
+    ApprovalRequest,
     CompiledContext,
     ExecutionContext,
     ExecutionState,
@@ -31,6 +36,7 @@ from ..contracts import (
     RiskLevel,
     RuntimeConfig,
     SafetyFlag,
+    ToolCall,
     ToolCallRecord,
     ToolExecutionRecord,
     ToolResult,
@@ -44,7 +50,11 @@ from ..errors import (
     ProviderOutputError,
     ProviderTimeoutError,
 )
-from ..evaluation.contracts import RunTrace
+from ..evaluation.contracts import RunTrace, TraceEvent
+from ..governance.approvals import (
+    ApprovalBroker,
+    ApprovalPolicyEvaluator,
+)
 from ..governance.permissions import DefaultPermissionBroker, PermissionBroker
 from ..governance.safety import SafetyDecision, SafetyPolicy, indirect_injection_matches
 from ..memory.strategies import MemoryStrategy
@@ -90,6 +100,26 @@ class _ActiveExecution:
     tool_calls: list[ToolCallRecord]
     current_step: PlanStep | None = None
     current_tool: ToolDefinition | None = None
+
+
+@dataclass
+class _PendingApproval:
+    """In-memory continuation data for one paused approval gate."""
+
+    principal: PrincipalContext
+    execution: ExecutionContext
+    input_text: str
+    resource: ResourceContext | None
+    plan: AgentPlan
+    resume_plan: AgentPlan
+    tool_calls: list[ToolCallRecord]
+    tool_results: list[ToolResult]
+    highest_risk: RiskLevel
+    request: ApprovalRequest
+    outcome: AgentOutcome
+    trace: TraceRecorder
+    trace_prefix: RunTrace | None = None
+    trace_prefix_event_count: int = 0
 
 
 class _ControlledProviderCallPolicy:
@@ -150,6 +180,8 @@ class AgentRuntime:
         state_store: StateStore | None = None,
         memory: MemoryStrategy | None = None,
         permission_broker: PermissionBroker | None = None,
+        approval_broker: ApprovalBroker | None = None,
+        approval_policy: ApprovalPolicyEvaluator | None = None,
         safety_policy: SafetyPolicy | None = None,
         trace_sink: TraceSink | None = None,
         audit_sink: AuditSink | None = None,
@@ -167,6 +199,17 @@ class AgentRuntime:
         self.state_store = state_store or InMemoryStateStore()
         self.memory = memory
         self.permission_broker = permission_broker or DefaultPermissionBroker()
+        self.approval_broker = approval_broker
+        self.approval_policy: ApprovalPolicyEvaluator | None = approval_policy
+        if (
+            self.approval_policy is None
+            and approval_broker is not None
+            and hasattr(approval_broker, "policy_engine")
+        ):
+            self.approval_policy = cast(
+                ApprovalPolicyEvaluator,
+                getattr(approval_broker, "policy_engine"),  # noqa: B009
+            )
         self.config = config or RuntimeConfig()
         self.provider_call_policy = provider_call_policy or DefaultProviderCallPolicy(
             timeout_seconds_value=self.config.provider_timeout_seconds,
@@ -187,6 +230,8 @@ class AgentRuntime:
         self._trace_lock = RLock()
         self._active: dict[str, _ActiveExecution] = {}
         self._active_lock = RLock()
+        self._pending_approvals: dict[str, _PendingApproval] = {}
+        self._pending_lock = RLock()
 
     def execute(
         self,
@@ -206,6 +251,11 @@ class AgentRuntime:
         timeout_seconds: float | None = None,
         cancellation_event: CancellationSignal | None = None,
         cancel_event: CancellationSignal | None = None,
+        _plan_override: AgentPlan | None = None,
+        _composition_plan_override: AgentPlan | None = None,
+        _initial_tool_calls: Sequence[ToolCallRecord] = (),
+        _initial_tool_results: Sequence[ToolResult] = (),
+        _initial_highest_risk: RiskLevel = RiskLevel.LOW,
     ) -> AgentOutcome:
         """Execute one bounded run with cooperative timeout and cancellation."""
 
@@ -235,6 +285,11 @@ class AgentRuntime:
                 max_risk_level=max_risk_level,
                 resource=resource,
                 control=control,
+                _plan_override=_plan_override,
+                _composition_plan_override=_composition_plan_override,
+                _initial_tool_calls=_initial_tool_calls,
+                _initial_tool_results=_initial_tool_results,
+                _initial_highest_risk=_initial_highest_risk,
             )
         except (ExecutionTimeoutError, ExecutionCancelledError) as exc:
             with self._active_lock:
@@ -246,6 +301,126 @@ class AgentRuntime:
             if control.execution_id is not None:
                 with self._active_lock:
                     self._active.pop(control.execution_id, None)
+
+    def approval_request_for(self, execution_id: str) -> ApprovalRequest | None:
+        """Return the exact pending approval request for an execution."""
+
+        with self._pending_lock:
+            pending = self._pending_approvals.get(execution_id)
+            return pending.request.model_copy(deep=True) if pending is not None else None
+
+    def pending_approval(self, execution_id: str) -> ApprovalRequest | None:
+        """Alias for :meth:`approval_request_for` used by integrations."""
+
+        return self.approval_request_for(execution_id)
+
+    def resume(
+        self,
+        execution_id: str,
+        approval_decision: ApprovalDecision | None = None,
+        *,
+        approval: ApprovalDecision | None = None,
+    ) -> AgentOutcome:
+        """Resume a paused execution after its exact request is decided."""
+
+        if approval_decision is not None and approval is not None:
+            raise ValueError("provide only one approval decision")
+        with self._pending_lock:
+            pending = self._pending_approvals.get(execution_id)
+        if pending is None:
+            raise KeyError(f"unknown or non-paused execution: {execution_id}")
+
+        decision = approval_decision or approval
+        if decision is None and self.approval_broker is not None:
+            raw_decision = self.approval_broker.get_decision(pending.request.request_id)
+            decision = (
+                ApprovalDecision.model_validate(raw_decision) if raw_decision is not None else None
+            )
+        if decision is None:
+            return pending.outcome.model_copy(deep=True)
+
+        status, error_code = self._validate_approval_decision(pending.request, decision)
+        if error_code is not None:
+            return self._close_pending_approval(
+                pending=pending,
+                status=OutcomeStatus.REFUSED,
+                summary="The approval evidence does not match the reviewed action.",
+                error_code=error_code,
+                event_type="approval_stale",
+                decision=decision,
+            )
+        if status == ApprovalDecisionStatus.REJECTED:
+            return self._close_pending_approval(
+                pending=pending,
+                status=OutcomeStatus.REFUSED,
+                summary="The reviewer rejected the proposed action.",
+                error_code="approval_rejected",
+                event_type="approval_rejected",
+                decision=decision,
+            )
+        if status == ApprovalDecisionStatus.REQUEST_CHANGES:
+            return self._close_pending_approval(
+                pending=pending,
+                status=OutcomeStatus.NEEDS_INPUT,
+                summary="The reviewer requested changes before the action can run.",
+                error_code="approval_changes_requested",
+                event_type="approval_changes_requested",
+                decision=decision,
+            )
+        if status == ApprovalDecisionStatus.EXPIRED:
+            return self._close_pending_approval(
+                pending=pending,
+                status=OutcomeStatus.ESCALATED,
+                summary="The approval expired before the action could run.",
+                error_code="approval_expired",
+                event_type="approval_expired",
+                decision=decision,
+                recovery=RecoveryAction.ESCALATE,
+                human_review_required=True,
+            )
+
+        pending.trace.record(
+            stage="approval",
+            event_type="approval_approved",
+            metadata=self._approval_metadata(pending.request, decision),
+        )
+        self._audit(
+            event_type="approval_approved",
+            principal=pending.principal,
+            execution=pending.execution,
+            tool_ids=[pending.request.action.tool_call.tool_id],
+            metadata=self._approval_metadata(pending.request, decision),
+        )
+        with self._pending_lock:
+            self._pending_approvals.pop(execution_id, None)
+        try:
+            outcome = self.execute(
+                pending.principal,
+                pending.input_text,
+                agent_id=pending.execution.agent_id,
+                agent_version=pending.execution.agent_version,
+                authorized_tool_ids=pending.execution.authorized_tool_ids,
+                granted_permissions=pending.execution.granted_permissions,
+                approved_action_digests=(
+                    *pending.execution.approved_action_digests,
+                    pending.request.action_digest,
+                ),
+                state_id=pending.execution.state_id,
+                execution_id=pending.execution.execution_id,
+                environment=pending.execution.environment,
+                max_risk_level=pending.execution.max_risk_level,
+                resource=pending.resource,
+                _plan_override=pending.resume_plan,
+                _composition_plan_override=pending.plan,
+                _initial_tool_calls=pending.tool_calls,
+                _initial_tool_results=pending.tool_results,
+                _initial_highest_risk=pending.highest_risk,
+            )
+        except Exception:
+            with self._pending_lock:
+                self._pending_approvals[execution_id] = pending
+            raise
+        return self._merge_resumed_trace(pending, outcome)
 
     def _execute(
         self,
@@ -263,6 +438,11 @@ class AgentRuntime:
         max_risk_level: RiskLevel | None = None,
         resource: ResourceContext | None = None,
         control: ExecutionControl,
+        _plan_override: AgentPlan | None = None,
+        _composition_plan_override: AgentPlan | None = None,
+        _initial_tool_calls: Sequence[ToolCallRecord] = (),
+        _initial_tool_results: Sequence[ToolResult] = (),
+        _initial_highest_risk: RiskLevel = RiskLevel.LOW,
     ) -> AgentOutcome:
         """Execute one caller-supplied input through the bounded runtime."""
 
@@ -277,6 +457,9 @@ class AgentRuntime:
             state_id=state_id,
         )
         resolved_execution_id = execution_id or self._id("execution")
+        with self._pending_lock:
+            if resolved_execution_id in self._pending_approvals:
+                raise ValueError("execution has a pending approval; call resume instead of execute")
         control.bind_execution(resolved_execution_id)
         execution = ExecutionContext(
             execution_id=resolved_execution_id,
@@ -298,8 +481,12 @@ class AgentRuntime:
             id_factory=self._id,
             clock=self._clock,
         )
-        tool_calls: list[ToolCallRecord] = []
-        tool_results: list[ToolResult] = []
+        tool_calls: list[ToolCallRecord] = [
+            call.model_copy(deep=True) for call in _initial_tool_calls
+        ]
+        tool_results: list[ToolResult] = [
+            result.model_copy(deep=True) for result in _initial_tool_results
+        ]
         with self._active_lock:
             self._active[resolved_execution_id] = _ActiveExecution(
                 principal=principal,
@@ -357,42 +544,100 @@ class AgentRuntime:
             },
         )
         interpretation: InterpretationResponse | None = None
-        interpretation_fn = getattr(self.provider, "interpret", None)
-        if callable(interpretation_fn):
-            interpretation_request = InterpretationRequest(
+        if _plan_override is None:
+            interpretation_fn = getattr(self.provider, "interpret", None)
+            if callable(interpretation_fn):
+                interpretation_request = InterpretationRequest(
+                    request_id=self._id("provider_request"),
+                    context=context,
+                    execution=execution,
+                    capabilities=[
+                        capability.model_copy(deep=True) for capability in self.capabilities
+                    ],
+                    tools=self.tools.descriptors(self._visible_tool_ids(execution)),
+                )
+                trace.record(
+                    stage="interpretation",
+                    event_type="provider_call_started",
+                    metadata={"operation": ProviderOperation.INTERPRET.value},
+                )
+                try:
+                    invocation = self._invoke_provider(
+                        operation=ProviderOperation.INTERPRET,
+                        call=lambda: cast(Callable[..., object], interpretation_fn)(
+                            request=interpretation_request
+                        ),
+                        control=control,
+                    )
+                    interpretation = normalize_interpretation(invocation.value)
+                    interpretation = cast(
+                        InterpretationResponse,
+                        _with_invocation_metadata(interpretation, invocation),
+                    )
+                    control.check()
+                    trace.record_provider_call(
+                        operation=ProviderOperation.INTERPRET,
+                        metadata=interpretation.metadata,
+                    )
+                    trace.record(
+                        stage="interpretation",
+                        event_type="provider_call_completed",
+                        metadata={"operation": ProviderOperation.INTERPRET.value},
+                    )
+                except Exception as exc:  # noqa: BLE001 - provider code is an extension boundary.
+                    return self._provider_failure(
+                        principal=principal,
+                        execution=execution,
+                        state=state,
+                        trace=trace,
+                        operation=ProviderOperation.INTERPRET,
+                        error=exc,
+                        control=control,
+                    )
+
+            planning_request = PlanningRequest(
                 request_id=self._id("provider_request"),
                 context=context,
                 execution=execution,
                 capabilities=[capability.model_copy(deep=True) for capability in self.capabilities],
                 tools=self.tools.descriptors(self._visible_tool_ids(execution)),
-            )
-            trace.record(
-                stage="interpretation",
-                event_type="provider_call_started",
-                metadata={"operation": ProviderOperation.INTERPRET.value},
+                interpretation=interpretation,
             )
             try:
+                trace.record(
+                    stage="planning",
+                    event_type="provider_call_started",
+                    metadata={"operation": ProviderOperation.PLAN.value},
+                )
                 invocation = self._invoke_provider(
-                    operation=ProviderOperation.INTERPRET,
-                    call=lambda: cast(Callable[..., object], interpretation_fn)(
-                        request=interpretation_request
+                    operation=ProviderOperation.PLAN,
+                    call=lambda: self._call_provider_operation(
+                        method=cast(Callable[..., object], self.provider.plan),
+                        request=planning_request,
+                        legacy_kwargs={
+                            "context": planning_request.context,
+                            "execution": planning_request.execution,
+                            "capabilities": planning_request.capabilities,
+                            "tools": planning_request.tools,
+                        },
                     ),
                     control=control,
                 )
-                interpretation = normalize_interpretation(invocation.value)
-                interpretation = cast(
-                    InterpretationResponse,
-                    _with_invocation_metadata(interpretation, invocation),
+                planning_response = normalize_plan(invocation.value)
+                planning_response = cast(
+                    PlanningResponse,
+                    _with_invocation_metadata(planning_response, invocation),
                 )
                 control.check()
                 trace.record_provider_call(
-                    operation=ProviderOperation.INTERPRET,
-                    metadata=interpretation.metadata,
+                    operation=ProviderOperation.PLAN,
+                    metadata=planning_response.metadata,
                 )
+                plan = planning_response.plan
                 trace.record(
-                    stage="interpretation",
+                    stage="planning",
                     event_type="provider_call_completed",
-                    metadata={"operation": ProviderOperation.INTERPRET.value},
+                    metadata={"operation": ProviderOperation.PLAN.value},
                 )
             except Exception as exc:  # noqa: BLE001 - provider code is an extension boundary.
                 return self._provider_failure(
@@ -400,64 +645,18 @@ class AgentRuntime:
                     execution=execution,
                     state=state,
                     trace=trace,
-                    operation=ProviderOperation.INTERPRET,
+                    operation=ProviderOperation.PLAN,
                     error=exc,
                     control=control,
                 )
-
-        planning_request = PlanningRequest(
-            request_id=self._id("provider_request"),
-            context=context,
-            execution=execution,
-            capabilities=[capability.model_copy(deep=True) for capability in self.capabilities],
-            tools=self.tools.descriptors(self._visible_tool_ids(execution)),
-            interpretation=interpretation,
-        )
-        try:
+            composition_plan = plan.model_copy(deep=True)
+        else:
+            plan = _plan_override.model_copy(deep=True)
+            composition_plan = (_composition_plan_override or plan).model_copy(deep=True)
             trace.record(
                 stage="planning",
-                event_type="provider_call_started",
-                metadata={"operation": ProviderOperation.PLAN.value},
-            )
-            invocation = self._invoke_provider(
-                operation=ProviderOperation.PLAN,
-                call=lambda: self._call_provider_operation(
-                    method=cast(Callable[..., object], self.provider.plan),
-                    request=planning_request,
-                    legacy_kwargs={
-                        "context": planning_request.context,
-                        "execution": planning_request.execution,
-                        "capabilities": planning_request.capabilities,
-                        "tools": planning_request.tools,
-                    },
-                ),
-                control=control,
-            )
-            planning_response = normalize_plan(invocation.value)
-            planning_response = cast(
-                PlanningResponse,
-                _with_invocation_metadata(planning_response, invocation),
-            )
-            control.check()
-            trace.record_provider_call(
-                operation=ProviderOperation.PLAN,
-                metadata=planning_response.metadata,
-            )
-            plan = planning_response.plan
-            trace.record(
-                stage="planning",
-                event_type="provider_call_completed",
-                metadata={"operation": ProviderOperation.PLAN.value},
-            )
-        except Exception as exc:  # noqa: BLE001 - provider code is an extension boundary.
-            return self._provider_failure(
-                principal=principal,
-                execution=execution,
-                state=state,
-                trace=trace,
-                operation=ProviderOperation.PLAN,
-                error=exc,
-                control=control,
+                event_type="plan_resumed",
+                metadata={"step_count": str(len(plan.steps))},
             )
 
         try:
@@ -522,7 +721,7 @@ class AgentRuntime:
                 outcome=outcome,
                 trace=trace,
             )
-        highest_risk = RiskLevel.LOW
+        highest_risk = _initial_highest_risk
         for step_index, step in enumerate(plan.steps, start=1):
             control.check()
             trace.record(
@@ -556,6 +755,150 @@ class AgentRuntime:
                 arguments=step.arguments,
                 resource=resource,
             )
+            approval_action = self._action_proposal(
+                execution=execution,
+                tool=tool,
+                step=step,
+            )
+            approval_policy_decision = self._approval_policy_decision(
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                action=approval_action,
+            )
+            if approval_policy_decision is not None:
+                trace.record(
+                    stage="approval",
+                    event_type="approval_policy_decision",
+                    metadata={
+                        "required": str(approval_policy_decision.required).lower(),
+                        "reason_code": approval_policy_decision.reason_code,
+                        "policy_id": approval_policy_decision.policy_id or "none",
+                        "matched_rule_count": str(len(approval_policy_decision.matched_rule_ids)),
+                    },
+                )
+                self._audit(
+                    event_type="approval_policy_decision",
+                    principal=principal,
+                    execution=execution,
+                    tool_ids=[tool.tool_id],
+                    metadata={
+                        "required": str(approval_policy_decision.required).lower(),
+                        "reason_code": approval_policy_decision.reason_code,
+                        "policy_id": approval_policy_decision.policy_id or "none",
+                    },
+                )
+            has_exact_approval = (
+                tool.action_digest(step.arguments) in execution.approved_action_digests
+            )
+            if (
+                permission.allowed
+                and approval_policy_decision is not None
+                and approval_policy_decision.required
+                and not has_exact_approval
+            ):
+                permission = self._deny_permission(
+                    permission=permission,
+                    principal=principal,
+                    execution=execution,
+                    tool=tool,
+                    reason_code="approval_required",
+                    approval_required=True,
+                )
+            approval_request: ApprovalRequest | None = None
+            approval_decision: ApprovalDecision | None = None
+            approval_status: ApprovalDecisionStatus | None = None
+            approval_error_code: str | None = None
+            approval_call_id: str | None = None
+            if (
+                not permission.allowed
+                and permission.approval_required
+                and self.approval_broker is not None
+            ):
+                approval_call_id = self._id("call")
+                approval_action = self._action_proposal(
+                    execution=execution,
+                    tool=tool,
+                    step=step,
+                    call_id=approval_call_id,
+                )
+                approval_request = self._approval_request(
+                    execution=execution,
+                    action=approval_action,
+                    action_digest=tool.action_digest(step.arguments),
+                    context=context,
+                    reason=permission.reason_code,
+                    policy_decision=approval_policy_decision,
+                )
+                approval_metadata = self._approval_metadata(approval_request)
+                trace.record(
+                    stage="approval",
+                    event_type="approval_requested",
+                    metadata=approval_metadata,
+                )
+                self._audit(
+                    event_type="approval_requested",
+                    principal=principal,
+                    execution=execution,
+                    tool_ids=[tool.tool_id],
+                    metadata=approval_metadata,
+                )
+                raw_approval_decision = self.approval_broker.submit(
+                    approval_request.model_copy(deep=True)
+                )
+                approval_decision = (
+                    ApprovalDecision.model_validate(raw_approval_decision)
+                    if raw_approval_decision is not None
+                    else None
+                )
+                if approval_decision is not None:
+                    approval_status, approval_error_code = self._validate_approval_decision(
+                        approval_request,
+                        approval_decision,
+                    )
+                    if (
+                        approval_error_code is None
+                        and approval_status == ApprovalDecisionStatus.APPROVED
+                    ):
+                        trace.record(
+                            stage="approval",
+                            event_type="approval_approved",
+                            metadata=self._approval_metadata(
+                                approval_request,
+                                approval_decision,
+                            ),
+                        )
+                        self._audit(
+                            event_type="approval_approved",
+                            principal=principal,
+                            execution=execution,
+                            tool_ids=[tool.tool_id],
+                            metadata=self._approval_metadata(
+                                approval_request,
+                                approval_decision,
+                            ),
+                        )
+                        execution = execution.model_copy(
+                            update={
+                                "approved_action_digests": tuple(
+                                    dict.fromkeys(
+                                        (
+                                            *execution.approved_action_digests,
+                                            approval_request.action_digest,
+                                        )
+                                    )
+                                )
+                            }
+                        )
+                        permission = self._authorize(
+                            principal=principal,
+                            execution=execution,
+                            tool=tool,
+                            arguments=step.arguments,
+                            resource=resource,
+                        )
+                        if not permission.allowed:
+                            approval_status = None
             if permission.policy_decision is not None:
                 trace.record_policy_decision(permission.policy_decision)
                 trace.record(
@@ -593,7 +936,7 @@ class AgentRuntime:
                 )
                 tool_calls.append(
                     ToolCallRecord(
-                        call_id=self._id("call"),
+                        call_id=approval_call_id or self._id("call"),
                         step_id=step.step_id,
                         tool_id=tool.tool_id,
                         tool_version=tool.version,
@@ -622,39 +965,129 @@ class AgentRuntime:
                     ],
                     metadata={"reason_code": permission.reason_code},
                 )
+                outcome_status = (
+                    OutcomeStatus.ESCALATED
+                    if permission.approval_required
+                    else OutcomeStatus.REFUSED
+                )
+                outcome_summary = (
+                    "The action requires exact human approval before execution."
+                    if permission.approval_required
+                    else "The proposed tool call is not authorized for this execution."
+                )
+                outcome_recovery = (
+                    RecoveryAction.ESCALATE
+                    if permission.approval_required
+                    else RecoveryAction.REFUSE
+                )
+                outcome_human_review = permission.approval_required
+                outcome_error_code = permission.reason_code
+                if approval_request is not None and approval_decision is None:
+                    trace.record(
+                        stage="runtime",
+                        event_type="execution_paused",
+                        metadata={
+                            "reason_code": "approval_required",
+                            "request_id": approval_request.request_id,
+                        },
+                    )
+                elif approval_request is not None and (
+                    approval_error_code is not None
+                    or approval_status
+                    in {
+                        ApprovalDecisionStatus.REJECTED,
+                        ApprovalDecisionStatus.REQUEST_CHANGES,
+                        ApprovalDecisionStatus.EXPIRED,
+                    }
+                ):
+                    transition = _approval_transition(
+                        status=approval_status,
+                        error_code=approval_error_code,
+                    )
+                    metadata = self._approval_metadata(approval_request, approval_decision)
+                    trace.record(
+                        stage="approval",
+                        event_type=transition,
+                        metadata={**metadata, "error_code": transition},
+                    )
+                    self._audit(
+                        event_type=transition,
+                        principal=principal,
+                        execution=execution,
+                        tool_ids=[tool.tool_id],
+                        safety_flags=[SafetyFlag.APPROVAL_REQUIRED],
+                        metadata={**metadata, "error_code": transition},
+                    )
+                    if approval_error_code is not None:
+                        outcome_status = OutcomeStatus.REFUSED
+                        outcome_summary = (
+                            "The approval evidence does not match the reviewed action."
+                        )
+                        outcome_recovery = RecoveryAction.REFUSE
+                        outcome_human_review = False
+                        outcome_error_code = approval_error_code
+                    elif approval_status == ApprovalDecisionStatus.REJECTED:
+                        outcome_status = OutcomeStatus.REFUSED
+                        outcome_summary = "The reviewer rejected the proposed action."
+                        outcome_recovery = RecoveryAction.REFUSE
+                        outcome_human_review = False
+                        outcome_error_code = "approval_rejected"
+                    elif approval_status == ApprovalDecisionStatus.REQUEST_CHANGES:
+                        outcome_status = OutcomeStatus.NEEDS_INPUT
+                        outcome_summary = (
+                            "The reviewer requested changes before the action can run."
+                        )
+                        outcome_recovery = RecoveryAction.REQUEST_INPUT
+                        outcome_human_review = True
+                        outcome_error_code = "approval_changes_requested"
+                    elif approval_status == ApprovalDecisionStatus.EXPIRED:
+                        outcome_status = OutcomeStatus.ESCALATED
+                        outcome_summary = "The approval expired before the action could run."
+                        outcome_recovery = RecoveryAction.ESCALATE
+                        outcome_human_review = True
+                        outcome_error_code = "approval_expired"
                 outcome = self._decision_outcome(
                     execution=execution,
-                    status=(
-                        OutcomeStatus.ESCALATED
-                        if permission.approval_required
-                        else OutcomeStatus.REFUSED
-                    ),
-                    summary=(
-                        "The action requires exact human approval before execution."
-                        if permission.approval_required
-                        else "The proposed tool call is not authorized for this execution."
-                    ),
+                    status=outcome_status,
+                    summary=outcome_summary,
                     flags=[
                         SafetyFlag.APPROVAL_REQUIRED
                         if permission.approval_required
                         else SafetyFlag.PERMISSION_DENIED
                     ],
                     tool_calls=tool_calls,
-                    recovery=(
-                        RecoveryAction.ESCALATE
-                        if permission.approval_required
-                        else RecoveryAction.REFUSE
-                    ),
-                    human_review_required=permission.approval_required,
-                    error_code=permission.reason_code,
+                    recovery=outcome_recovery,
+                    human_review_required=outcome_human_review,
+                    error_code=outcome_error_code,
                 )
-                return self._finish(
+                finished = self._finish(
                     principal=principal,
                     execution=execution,
                     state=state,
                     outcome=outcome,
                     trace=trace,
                 )
+                if approval_request is not None and approval_decision is None:
+                    self._remember_pending_approval(
+                        principal=principal,
+                        execution=execution,
+                        input_text=text,
+                        resource=resource,
+                        plan=composition_plan,
+                        resume_plan=AgentPlan(
+                            steps=[
+                                step.model_copy(deep=True) for step in plan.steps[step_index - 1 :]
+                            ],
+                            stop_reason=plan.stop_reason,
+                        ),
+                        tool_calls=tool_calls[:-1],
+                        tool_results=tool_results,
+                        highest_risk=highest_risk,
+                        request=approval_request,
+                        outcome=finished,
+                        trace=trace,
+                    )
+                return finished
 
             trace.record(
                 stage="permission",
@@ -766,7 +1199,7 @@ class AgentRuntime:
             tool_results.append(result)
             tool_calls.append(
                 ToolCallRecord(
-                    call_id=self._id("call"),
+                    call_id=approval_call_id or self._id("call"),
                     step_id=step.step_id,
                     tool_id=tool.tool_id,
                     tool_version=tool.version,
@@ -855,7 +1288,7 @@ class AgentRuntime:
             request_id=self._id("provider_request"),
             context=result_context,
             execution=execution,
-            plan=plan,
+            plan=composition_plan,
             tool_results=[result.model_copy(deep=True) for result in tool_results],
         )
         try:
@@ -1338,6 +1771,311 @@ class AgentRuntime:
             trace=active.trace,
         )
 
+    def _approval_policy_decision(
+        self,
+        *,
+        principal: PrincipalContext,
+        execution: ExecutionContext,
+        tool: ToolDefinition,
+        action: ActionProposal,
+    ) -> ApprovalPolicyDecision | None:
+        if self.approval_policy is None:
+            return None
+        evaluator = cast(Callable[..., object], self.approval_policy.evaluate)
+        return ApprovalPolicyDecision.model_validate(
+            evaluator(
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                action=action,
+            )
+        )
+
+    def _action_proposal(
+        self,
+        *,
+        execution: ExecutionContext,
+        tool: ToolDefinition,
+        step: PlanStep,
+        call_id: str | None = None,
+    ) -> ActionProposal:
+        """Build approval data from trusted tool metadata and the exact step."""
+
+        return ActionProposal(
+            action_id=step.step_id,
+            execution_id=execution.execution_id,
+            tool_call=ToolCall(
+                call_id=call_id,
+                tool_id=tool.tool_id,
+                tool_version=tool.version,
+                arguments=step.arguments,
+                purpose=step.purpose,
+                idempotency_key=step.idempotency_key,
+            ),
+            risk_level=tool.risk_level,
+            requires_approval=True,
+            justification=step.purpose,
+        )
+
+    def _approval_request(
+        self,
+        *,
+        execution: ExecutionContext,
+        action: ActionProposal,
+        action_digest: str,
+        context: CompiledContext,
+        reason: str,
+        policy_decision: ApprovalPolicyDecision | None,
+    ) -> ApprovalRequest:
+        expiry_seconds = (
+            policy_decision.expiry_seconds
+            if policy_decision is not None and policy_decision.expiry_seconds is not None
+            else self.config.approval_expiry_seconds
+        )
+        created_at = self._clock()
+        expires_at = (
+            created_at + timedelta(seconds=expiry_seconds) if expiry_seconds is not None else None
+        )
+        return ApprovalRequest(
+            request_id=self._id("approval_request"),
+            execution_id=execution.execution_id,
+            agent_id=execution.agent_id,
+            agent_version=execution.agent_version,
+            principal_id=execution.principal.principal_id,
+            tenant_id=execution.principal.tenant_id,
+            action=action,
+            action_digest=action_digest,
+            reason=reason,
+            context=context.model_copy(deep=True),
+            approval_policy_id=policy_decision.policy_id if policy_decision else None,
+            approval_policy_version=policy_decision.policy_version if policy_decision else None,
+            approval_rule_ids=(
+                list(policy_decision.matched_rule_ids) if policy_decision is not None else []
+            ),
+            expires_at=expires_at,
+            created_at=created_at,
+        )
+
+    def _validate_approval_decision(
+        self,
+        request: ApprovalRequest,
+        decision: ApprovalDecision,
+    ) -> tuple[ApprovalDecisionStatus | None, str | None]:
+        """Validate request identity, digest, and approval lifetime."""
+
+        if decision.request_id is not None and decision.request_id != request.request_id:
+            return None, "approval_request_mismatch"
+        if decision.action_digest != request.action_digest:
+            return None, "approval_action_mismatch"
+        if decision.status != ApprovalDecisionStatus.APPROVED:
+            return decision.status, None
+        now = self._clock()
+        if request.expires_at is not None and now >= request.expires_at:
+            return ApprovalDecisionStatus.EXPIRED, "approval_expired"
+        if decision.expires_at is not None and now >= decision.expires_at:
+            return ApprovalDecisionStatus.EXPIRED, "approval_expired"
+        if decision.expires_at is not None and decision.expires_at <= decision.decided_at:
+            return None, "approval_expiry_invalid"
+        if request.expires_at is not None:
+            if decision.expires_at is not None and decision.expires_at > request.expires_at:
+                return None, "approval_expiry_invalid"
+            if decision.decided_at >= request.expires_at:
+                return ApprovalDecisionStatus.EXPIRED, "approval_expired"
+        return decision.status, None
+
+    @staticmethod
+    def _approval_metadata(
+        request: ApprovalRequest,
+        decision: ApprovalDecision | None = None,
+    ) -> dict[str, str]:
+        metadata = {
+            "request_id": request.request_id,
+            "action_digest": request.action_digest,
+            "tool_id": request.action.tool_call.tool_id,
+        }
+        if request.expires_at is not None:
+            metadata["expires_at"] = request.expires_at.isoformat()
+        if decision is not None:
+            metadata.update(
+                {
+                    "approval_id": decision.approval_id,
+                    "decision": decision.status.value,
+                    "decided_by": decision.decided_by,
+                }
+            )
+        return metadata
+
+    def _remember_pending_approval(
+        self,
+        *,
+        principal: PrincipalContext,
+        execution: ExecutionContext,
+        input_text: str,
+        resource: ResourceContext | None,
+        plan: AgentPlan,
+        resume_plan: AgentPlan,
+        tool_calls: Sequence[ToolCallRecord],
+        tool_results: Sequence[ToolResult],
+        highest_risk: RiskLevel,
+        request: ApprovalRequest,
+        outcome: AgentOutcome,
+        trace: TraceRecorder,
+        trace_prefix: RunTrace | None = None,
+    ) -> None:
+        with self._pending_lock:
+            self._pending_approvals[execution.execution_id] = _PendingApproval(
+                principal=principal,
+                execution=execution,
+                input_text=input_text,
+                resource=resource,
+                plan=plan.model_copy(deep=True),
+                resume_plan=resume_plan.model_copy(deep=True),
+                tool_calls=[call.model_copy(deep=True) for call in tool_calls],
+                tool_results=[result.model_copy(deep=True) for result in tool_results],
+                highest_risk=highest_risk,
+                request=request.model_copy(deep=True),
+                outcome=outcome.model_copy(deep=True),
+                trace=trace,
+                trace_prefix=trace_prefix.model_copy(deep=True) if trace_prefix else None,
+            )
+
+    def _close_pending_approval(
+        self,
+        *,
+        pending: _PendingApproval,
+        status: OutcomeStatus,
+        summary: str,
+        error_code: str,
+        event_type: str,
+        decision: ApprovalDecision,
+        recovery: RecoveryAction | None = None,
+        human_review_required: bool | None = None,
+    ) -> AgentOutcome:
+        metadata = self._approval_metadata(pending.request, decision)
+        metadata["error_code"] = error_code
+        pending.trace.record(
+            stage="approval",
+            event_type=event_type,
+            metadata=metadata,
+        )
+        self._audit(
+            event_type=event_type,
+            principal=pending.principal,
+            execution=pending.execution,
+            outcome_status=status,
+            safety_flags=[SafetyFlag.APPROVAL_REQUIRED],
+            tool_ids=[pending.request.action.tool_call.tool_id],
+            metadata=metadata,
+        )
+        state = self.state_store.get_or_create(
+            pending.principal,
+            agent_id=pending.execution.agent_id,
+            agent_version=pending.execution.agent_version,
+            state_id=pending.execution.state_id,
+        )
+        outcome = pending.outcome.model_copy(
+            update={
+                "outcome_id": self._id("outcome"),
+                "status": status,
+                "summary": summary,
+                "recovery": recovery or _recovery_for_status(status),
+                "human_review_required": (
+                    human_review_required
+                    if human_review_required is not None
+                    else status == OutcomeStatus.ESCALATED
+                ),
+                "error_code": error_code,
+            }
+        )
+        finished = self._finish(
+            principal=pending.principal,
+            execution=pending.execution,
+            state=state,
+            outcome=outcome,
+            trace=pending.trace,
+        )
+        if pending.trace_prefix is not None:
+            history = self._pending_trace_history(pending, final_status=finished.status)
+            current = self.trace_for(finished.execution_id)
+            merged = history.model_copy(
+                update={
+                    "trace_id": current.trace_id,
+                    "final_status": current.final_status,
+                    "generated_at": current.generated_at,
+                }
+            )
+            with self._trace_lock:
+                self._traces[finished.execution_id] = merged
+            finished = finished.model_copy(update={"trace_id": merged.trace_id})
+        with self._pending_lock:
+            self._pending_approvals.pop(pending.execution.execution_id, None)
+        return finished
+
+    def _merge_resumed_trace(
+        self,
+        pending: _PendingApproval,
+        outcome: AgentOutcome,
+    ) -> AgentOutcome:
+        """Keep the pause and resumed work in one ordered trace bundle."""
+
+        previous = self._pending_trace_history(
+            pending,
+            final_status=pending.outcome.status,
+        )
+        merged = self._merge_trace_bundle(previous, outcome)
+        merged_trace = self.trace_for(outcome.execution_id)
+        with self._pending_lock:
+            next_pending = self._pending_approvals.get(outcome.execution_id)
+            if next_pending is not None:
+                next_pending.trace_prefix = merged_trace
+                next_pending.trace_prefix_event_count = len(next_pending.trace.export().events)
+        return merged
+
+    def _pending_trace_history(
+        self,
+        pending: _PendingApproval,
+        *,
+        final_status: OutcomeStatus,
+    ) -> RunTrace:
+        """Return prior trace history plus events recorded in the current pause."""
+
+        current = pending.trace.export(final_status=final_status)
+        if pending.trace_prefix is None:
+            return current
+        extra_events = current.events[pending.trace_prefix_event_count :]
+        if not extra_events:
+            return pending.trace_prefix.model_copy(deep=True)
+        return _append_trace_events(
+            pending.trace_prefix,
+            extra_events,
+            generated_at=current.generated_at,
+        )
+
+    def _merge_trace_bundle(
+        self,
+        previous: RunTrace,
+        outcome: AgentOutcome,
+    ) -> AgentOutcome:
+        """Prepend a prior approval cycle to the current execution trace."""
+
+        current = self.trace_for(outcome.execution_id)
+        offset = len(previous.events)
+        resumed_events = [
+            event.model_copy(update={"sequence": event.sequence + offset})
+            for event in current.events
+        ]
+        merged = current.model_copy(
+            update={
+                "events": [*previous.events, *resumed_events],
+                "provider_calls": [*previous.provider_calls, *current.provider_calls],
+                "policy_decisions": [*previous.policy_decisions, *current.policy_decisions],
+                "tool_executions": [*previous.tool_executions, *current.tool_executions],
+            }
+        )
+        with self._trace_lock:
+            self._traces[outcome.execution_id] = merged
+        return outcome.model_copy(update={"trace_id": merged.trace_id})
+
     def trace_for(self, execution_id: str) -> RunTrace:
         """Return an exported trace for a completed execution."""
 
@@ -1582,6 +2320,42 @@ def _metadata_int(metadata: dict[str, str], key: str, *, default: int = 0) -> in
     except (TypeError, ValueError):
         return default
     return max(0, value)
+
+
+def _approval_transition(
+    *,
+    status: ApprovalDecisionStatus | None,
+    error_code: str | None,
+) -> str:
+    if error_code in {"approval_expired"} or status == ApprovalDecisionStatus.EXPIRED:
+        return "approval_expired"
+    if error_code is not None:
+        return "approval_stale"
+    return {
+        ApprovalDecisionStatus.REJECTED: "approval_rejected",
+        ApprovalDecisionStatus.REQUEST_CHANGES: "approval_changes_requested",
+        ApprovalDecisionStatus.EXPIRED: "approval_expired",
+        ApprovalDecisionStatus.APPROVED: "approval_approved",
+        None: "approval_stale",
+    }[status]
+
+
+def _append_trace_events(
+    trace: RunTrace,
+    events: Sequence[TraceEvent],
+    *,
+    generated_at: datetime,
+) -> RunTrace:
+    """Append already-recorded events with contiguous trace sequence numbers."""
+
+    offset = len(trace.events)
+    appended = [event.model_copy(update={"sequence": event.sequence + offset}) for event in events]
+    return trace.model_copy(
+        update={
+            "events": [*trace.events, *appended],
+            "generated_at": generated_at,
+        }
+    )
 
 
 def _state_status(status: OutcomeStatus) -> ExecutionStateStatus:

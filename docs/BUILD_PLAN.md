@@ -250,24 +250,28 @@ Run a single enterprise agent safely through a bounded plan-and-act loop.
 
 ## Phase 6: Human Approval Gates
 
+Status: complete. Evidence: `governance/approvals.py`,
+`runtime/execution.py`, `tests/test_phase_6_approval.py`, and the quality
+workflow.
+
 ### Objective
 Support sensitive actions without forcing all workflows to be fully autonomous.
 
 ### Tasks
-- [ ] Define approval policies by tool, action, risk, and environment.
-- [ ] Implement `ApprovalBroker`.
-- [ ] Support synchronous approval pauses.
-- [ ] Support resumable executions after approval.
-- [ ] Add approval expiry.
-- [ ] Add approve, reject, and request-change outcomes.
-- [ ] Preserve original action proposal and context for review.
-- [ ] Prevent agent modification of approval requirements.
-- [ ] Add audit events for all approval transitions.
-- [ ] Add tests for stale approvals and changed action payloads.
+- [x] Define approval policies by tool, action, risk, and environment.
+- [x] Implement `ApprovalBroker`.
+- [x] Support synchronous approval pauses.
+- [x] Support resumable executions after approval.
+- [x] Add approval expiry.
+- [x] Add approve, reject, and request-change outcomes.
+- [x] Preserve original action proposal and context for review.
+- [x] Prevent agent modification of approval requirements.
+- [x] Add audit events for all approval transitions.
+- [x] Add tests for stale approvals and changed action payloads.
 
 ### Exit criteria
-- High-risk actions can pause and resume safely.
-- Approval applies only to the exact reviewed action.
+- [x] High-risk actions can pause and resume safely.
+- [x] Approval applies only to the exact reviewed action.
 
 ---
 

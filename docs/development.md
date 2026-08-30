@@ -1,6 +1,6 @@
 # Development workflow
 
-Status: accepted baseline through Phase 5.
+Status: accepted baseline through Phase 6.
 
 ## Supported layout
 

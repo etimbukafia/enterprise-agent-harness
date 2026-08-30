@@ -29,7 +29,7 @@ requirements.
 See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) for the phase-by-phase
 implementation plan.
 
-The Phase 0B architecture baseline and completed Phase 1-5 boundaries are in
+The Phase 0B architecture baseline and completed Phase 1-6 boundaries are in
 [`docs/architecture.md`](docs/architecture.md). The product scope is in
 [`docs/product-brief.md`](docs/product-brief.md), the public API baseline is in
 [`docs/public-api.md`](docs/public-api.md), and the development commands are
@@ -49,7 +49,7 @@ notes](docs/architecture.md) for provenance and scope.
 The core package does not include an evaluator. A consumer or external
 evaluation system can inspect the exported run trace.
 
-## Phase 1-5 implementation
+## Phase 1-6 implementation
 
 Phase 1 provides declarative agent, capability, policy, tool, identity,
 execution, action, approval, outcome, and error contracts. Phase 2 provides
@@ -65,7 +65,9 @@ deny-by-default policy, resource hooks, environment and risk limits, explicit
 policy records, and runtime enforcement of the authority ceiling. Phase 5
 provides the bounded runtime loop, trust partitions, run timeout and
 cancellation controls, a shared retry budget, deterministic stop states, and
-replayable execution traces.
+replayable execution traces. Phase 6 provides versioned approval policies,
+exact action requests with review context, pause and resume behavior, expiry,
+review outcomes, and approval transition audit events.
 
 See [`docs/public-api.md`](docs/public-api.md) for supported imports,
 [`docs/providers.md`](docs/providers.md) for provider integration guidance,

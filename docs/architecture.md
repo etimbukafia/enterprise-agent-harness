@@ -1,6 +1,6 @@
 # Enterprise agent runtime architecture
 
-Status: accepted baseline for Phases 0B, 1, 2, 3, and 4.
+Status: accepted baseline through Phase 6.
 
 This document defines the boundaries and invariants for the Enterprise Agent
 Harness. Later phases can add implementations. They must not move a
@@ -157,8 +157,19 @@ outcome when a control stops the run. A plan cannot exceed
 | Approval-gated action | The runtime creates an exact digest from the tool identity, tool version, and canonical arguments. The handler runs only after a valid, unexpired decision for that digest. |
 
 Approval is a gate on one exact action. A provider cannot change the action
-after approval. Full pause, resume, expiry, and approval-broker behavior is
-defined in Phase 6; the current runtime already denies an unapproved action.
+after approval. When an application supplies an `ApprovalBroker`, the runtime
+stores the exact action and initial context in a pending request. It returns
+`escalated` when no decision is available. A later `resume` checks the request
+ID, action digest, and approval expiry before the handler runs, then continues
+the stored bounded plan from the paused step. A rejection returns `refused`.
+A request for changes returns `needs_input`.
+
+`ApprovalPolicy` rules can add approval requirements by tool ID, action ID or
+kind, risk level, and environment. A policy can reduce autonomy but cannot
+remove a requirement declared by a tool or a trusted permission decision.
+`InMemoryApprovalBroker` is suitable for deterministic tests and one process.
+Durable approval storage and process-restart recovery remain later state
+responsibilities.
 
 ## Tool runtime and registry
 
@@ -295,6 +306,7 @@ PEP 440 forms such as `1.2.0rc1` and `1.2.0.dev1`.
 | Tool | A change to input or output meaning, side effects, kind, risk, required permission, approval requirement, or idempotency contract is breaking and needs a new major version. Compatible additions are minor. Behavior-preserving fixes are patch. |
 | Capability | Adding a compatible operation is minor. Removing an operation, changing its meaning, or changing its authority boundary is major. Metadata-only fixes are patch. |
 | Policy | Every behavior change gets a new immutable version. A change that can alter an existing allow, deny, or approval result is major for dependent manifests. |
+| Approval policy | Every behavior change gets a new immutable version. A change that can alter a required-review result is major for dependent manifests. |
 | Provider profile | A change that requires a new adapter contract or changes proposal interpretation is major. Compatible configuration additions are minor. Metadata or defect fixes are patch. |
 | Runtime contract | Schemas use an explicit major identifier such as `agent-outcome.v1`. Add optional fields without changing field meaning within a major. Use `v2` for a breaking change. |
 | Trace and replay | The schema version is part of every export. Consumers must declare supported versions. Never reuse a field for a new meaning. |
@@ -354,13 +366,17 @@ The following decisions are accepted for this baseline:
 - `adr/0003-separate-versioned-registries.md` - registry design; and
 - `adr/0004-versioned-trace-contracts.md` - trace and replay contracts; and
 - `adr/0005-bounded-execution-controls.md` - run timeout, cancellation, and
-  retry budget controls.
+  retry budget controls; and
+- `adr/0006-human-approval-gates.md` - exact approval requests, pause, and
+  resume.
 
 Phase 0B establishes the decisions and skeleton. Phases 1 and 2 implement the
 core contracts, provider-neutral request/response boundary, deterministic fake,
 optional OpenAI adapter, normalization, provider call policies, and provider
 metadata traces. Phases 3 and 4 implement the typed tool and governance
-boundaries. Phase 5 implements the bounded coordinator and run controls. Later
-phases implement durable approval, complete registries and factory behavior,
-delegation, background execution, cost controls, and production integrations.
+boundaries. Phase 5 implements the bounded coordinator and run controls. Phase
+6 implements application-owned approval policy, exact-digest pause and resume,
+expiry, and review outcomes. Later phases implement durable workflow state,
+complete registries and factory behavior, delegation, background execution,
+cost controls, and production integrations.
 Those features must use this baseline.

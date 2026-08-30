@@ -1,6 +1,6 @@
 # Public API baseline
 
-Status: accepted baseline for Phase 5.
+Status: accepted baseline for Phase 6.
 
 This document defines the smallest API that later phases must preserve. The
 root package may re-export additional compatibility names during the 0.x
@@ -27,6 +27,10 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.ActionProposal` | Canonical proposal for a potentially side-effecting action. |
 | `enterprise_agent_harness.ApprovalRequest` | Exact action request for an approval boundary. |
 | `enterprise_agent_harness.ApprovalDecision` | Exact approval evidence for one action digest. |
+| `enterprise_agent_harness.ApprovalDecisionStatus` | Approve, reject, request-change, or expired state. |
+| `enterprise_agent_harness.ApprovalPolicy` | Versioned application approval policy. |
+| `enterprise_agent_harness.ApprovalPolicyRule` | Tool, action, risk, and environment approval rule. |
+| `enterprise_agent_harness.ApprovalPolicyDecision` | Deterministic approval-requirement result. |
 | `enterprise_agent_harness.AgentPlan` | Provider proposal for bounded tool steps. |
 | `enterprise_agent_harness.PlanStep` | One proposed tool call. |
 | `enterprise_agent_harness.ToolResult` | Typed, untrusted tool result envelope. |
@@ -43,6 +47,7 @@ when the versioning rules in `architecture.md` allow it.
 | Import | Purpose |
 | --- | --- |
 | `enterprise_agent_harness.AgentRuntime` | Execute one bounded governed run. |
+| `enterprise_agent_harness.AgentRuntime.resume` | Resume one paused execution after exact approval evidence. |
 | `enterprise_agent_harness.CancellationToken` | Request cooperative cancellation of a synchronous run. |
 | `enterprise_agent_harness.ContextCompiler` | Compile trust-labelled provider context. |
 | `enterprise_agent_harness.ProviderAdapter` | Provider-neutral proposal boundary. |
@@ -64,6 +69,9 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.ToolInvocationError` | Safe tool-boundary failure. |
 | `enterprise_agent_harness.PermissionBroker` | Permission decision boundary. |
 | `enterprise_agent_harness.DefaultPermissionBroker` | Deny-by-default broker with policy, resource, environment, and risk checks. |
+| `enterprise_agent_harness.ApprovalBroker` | Application boundary for exact approval requests and decisions. |
+| `enterprise_agent_harness.InMemoryApprovalBroker` | Thread-safe local approval broker for tests and single-process use. |
+| `enterprise_agent_harness.DeclarativeApprovalPolicyEngine` | Deterministic approval-policy evaluator. |
 | `enterprise_agent_harness.DeclarativePolicyEngine` / `PolicyEngine` | Deterministic allow/deny policy evaluator. |
 | `enterprise_agent_harness.EnvironmentConstraint` | Environment-specific tool and risk ceiling. |
 | `enterprise_agent_harness.ResourcePolicyHook` | Application hook for resource-level policy decisions. |
@@ -79,6 +87,18 @@ handlers must use their own cancellation and idempotency controls.
 `RuntimeConfig.execution_timeout_seconds` sets the default run timeout and
 `RuntimeConfig.max_retries` sets the shared retry budget. The budget counts
 retries across provider and tool calls. A value of zero disables retries.
+`RuntimeConfig.approval_expiry_seconds` sets the default lifetime of a
+pending approval request. An active approval policy rule can set a shorter
+lifetime.
+
+Pass an `ApprovalBroker` to `AgentRuntime` for approval-gated actions. The
+runtime returns `escalated` with an exact `ApprovalRequest` when a decision is
+not available. Call `broker.approve`, `broker.reject`, or
+`broker.request_changes`, then call `AgentRuntime.resume` with the execution
+ID. Resume checks the request ID, action digest, and expiry before a handler
+can run, then continues the stored bounded plan from the paused step. The
+provider cannot replace the reviewed action during resume. An approval never
+grants authority to another tool or argument set.
 
 ## Error layer
 

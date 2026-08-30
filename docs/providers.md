@@ -24,6 +24,10 @@ then resolves the exact registered tool and repeats validation and governance
 checks. A provider cannot add authority by returning a different tool list or
 claiming that an action is approved.
 
+Approval requirements are application-owned. A provider cannot remove them
+from a plan or mark a proposed action as approved. The runtime creates the
+approval request from trusted tool metadata and the validated plan step.
+
 ## Test provider
 
 Use `DeterministicProvider` for offline tests and conformance probes. It emits

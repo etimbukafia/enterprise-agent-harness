@@ -81,6 +81,15 @@ class OutcomeStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ApprovalDecisionStatus(str, Enum):
+    """Application decision for one exact approval request."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    REQUEST_CHANGES = "request_changes"
+    EXPIRED = "expired"
+
+
 class SafetyFlag(str, Enum):
     """Deterministic safety signal attached to an execution outcome."""
 
@@ -470,19 +479,61 @@ class ApprovalDecision(ContractModel):
     """Exact approval evidence for one sensitive action proposal."""
 
     approval_id: str = Field(min_length=1)
+    request_id: str | None = Field(default=None, min_length=1)
     action_digest: str = Field(min_length=1)
-    approved: bool
+    approved: bool | None = None
+    decision: ApprovalDecisionStatus | None = None
     decided_by: str = Field(min_length=1)
     reason_code: str = Field(min_length=1)
     expires_at: datetime | None = None
+    decided_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def normalize_decision_value(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {
+                "approve": "approved",
+                "reject": "rejected",
+                "request_change": "request_changes",
+                "request-change": "request_changes",
+                "requested_changes": "request_changes",
+            }.get(value.lower(), value)
+        return value
 
     @model_validator(mode="after")
-    def expiry_is_aware(self) -> Self:
-        if self.expires_at is not None and (
-            self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None
+    def decision_is_consistent(self) -> Self:
+        if self.decision is None:
+            if self.approved is None:
+                raise ValueError("approved or decision must be provided")
+            object.__setattr__(
+                self,
+                "decision",
+                (
+                    ApprovalDecisionStatus.APPROVED
+                    if self.approved
+                    else ApprovalDecisionStatus.REJECTED
+                ),
+            )
+        expected_approved = self.decision == ApprovalDecisionStatus.APPROVED
+        if self.approved is not None and self.approved != expected_approved:
+            raise ValueError("approved must match decision")
+        object.__setattr__(self, "approved", expected_approved)
+        for name, value in (
+            ("decided_at", self.decided_at),
+            ("expires_at", self.expires_at),
         ):
-            raise ValueError("expires_at must include timezone information")
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must include timezone information")
         return self
+
+    @property
+    def status(self) -> ApprovalDecisionStatus:
+        """Return the normalized application decision."""
+
+        # The model validator always fills this field.
+        assert self.decision is not None
+        return self.decision
 
 
 class ToolCall(ContractModel):
@@ -515,7 +566,7 @@ class ActionProposal(ContractModel):
 
 
 class ApprovalRequest(ContractModel):
-    """Exact action request sent to an application approval boundary."""
+    """Exact action and review context sent to an approval boundary."""
 
     schema_version: Literal["agent-approval-request.v1"] = "agent-approval-request.v1"
     request_id: str = Field(min_length=1)
@@ -527,14 +578,101 @@ class ApprovalRequest(ContractModel):
     action: ActionProposal
     action_digest: str = Field(min_length=1)
     reason: str = Field(min_length=1)
+    context: CompiledContext | None = None
+    approval_policy_id: str | None = Field(default=None, min_length=1)
+    approval_policy_version: str | None = Field(default=None, min_length=1)
+    approval_rule_ids: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
-    def expiry_is_aware(self) -> Self:
-        if self.expires_at is not None and (
-            self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None
+    def request_is_consistent(self) -> Self:
+        if self.action.execution_id != self.execution_id:
+            raise ValueError("approval action execution does not match request execution")
+        if self.action.tool_call.tool_id != self.action.tool_call.tool_id.strip():
+            raise ValueError("approval action tool ID must not contain surrounding whitespace")
+        if len(self.approval_rule_ids) != len(set(self.approval_rule_ids)):
+            raise ValueError("approval_rule_ids must not contain duplicates")
+        for name, value in (
+            ("created_at", self.created_at),
+            ("expires_at", self.expires_at),
         ):
-            raise ValueError("expires_at must include timezone information")
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must include timezone information")
+        return self
+
+
+class ApprovalPolicyRule(ContractModel):
+    """One application-owned rule that can require exact human approval."""
+
+    rule_id: str = Field(min_length=1)
+    tool_ids: list[str] = Field(default_factory=list)
+    action_ids: list[str] = Field(default_factory=list)
+    action_kinds: list[ToolKind] = Field(default_factory=list)
+    risk_levels: list[RiskLevel] = Field(default_factory=list)
+    environments: list[str] = Field(default_factory=list)
+    requires_approval: bool = True
+    expiry_seconds: float | None = Field(default=None, gt=0.0, le=86400.0)
+
+    @model_validator(mode="after")
+    def lists_are_unique(self) -> Self:
+        for name in (
+            "tool_ids",
+            "action_ids",
+            "action_kinds",
+            "risk_levels",
+            "environments",
+        ):
+            values = getattr(self, name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must not contain duplicates")
+        return self
+
+
+class ApprovalPolicy(ContractModel):
+    """Versioned approval requirements owned by the consuming application."""
+
+    schema_version: Literal["agent-approval-policy.v1"] = "agent-approval-policy.v1"
+    policy_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+    version: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    owner_id: str = Field(default="application", min_length=1)
+    default_requires_approval: bool = False
+    default_expiry_seconds: float | None = Field(default=None, gt=0.0, le=86400.0)
+    rules: list[ApprovalPolicyRule] = Field(default_factory=list)
+    lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.ACTIVE
+
+    @field_validator("version")
+    @classmethod
+    def version_is_pep440_component_version(cls, value: str) -> str:
+        return _validate_component_version(value)
+
+    @model_validator(mode="after")
+    def rule_ids_are_unique(self) -> Self:
+        rule_ids = [rule.rule_id for rule in self.rules]
+        if len(rule_ids) != len(set(rule_ids)):
+            raise ValueError("approval rule IDs must be unique")
+        return self
+
+
+class ApprovalPolicyDecision(ContractModel):
+    """Structured result of evaluating application approval requirements."""
+
+    schema_version: Literal["agent-approval-policy-decision.v1"] = (
+        "agent-approval-policy-decision.v1"
+    )
+    decision_id: str = Field(min_length=1)
+    required: bool
+    reason_code: str = Field(min_length=1)
+    policy_id: str | None = Field(default=None, min_length=1)
+    policy_version: str | None = Field(default=None, min_length=1)
+    matched_rule_ids: list[str] = Field(default_factory=list)
+    expiry_seconds: float | None = Field(default=None, gt=0.0, le=86400.0)
+
+    @model_validator(mode="after")
+    def matched_rule_ids_are_unique(self) -> Self:
+        if len(self.matched_rule_ids) != len(set(self.matched_rule_ids)):
+            raise ValueError("matched_rule_ids must not contain duplicates")
         return self
 
 
@@ -735,6 +873,7 @@ class RuntimeConfig(ContractModel):
     provider_retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
     execution_timeout_seconds: float | None = Field(default=60.0, gt=0.0, le=3600.0)
     max_retries: int = Field(default=3, ge=0, le=100)
+    approval_expiry_seconds: float | None = Field(default=900.0, gt=0.0, le=86400.0)
     environment: str = Field(default="development", min_length=1)
     max_risk_level: RiskLevel = RiskLevel.CRITICAL
 

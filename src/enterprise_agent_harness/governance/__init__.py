@@ -1,5 +1,12 @@
 """Deterministic authority and safety boundaries."""
 
+from .approvals import (
+    ApprovalBroker,
+    ApprovalPolicyEvaluator,
+    DeclarativeApprovalPolicyEngine,
+    DefaultApprovalBroker,
+    InMemoryApprovalBroker,
+)
 from .permissions import (
     DeclarativePolicyEngine,
     DefaultPermissionBroker,
@@ -17,9 +24,14 @@ from .safety import (
 )
 
 __all__ = [
+    "ApprovalBroker",
+    "ApprovalPolicyEvaluator",
+    "DeclarativeApprovalPolicyEngine",
     "DeclarativePolicyEngine",
+    "DefaultApprovalBroker",
     "DefaultPermissionBroker",
     "EnvironmentConstraint",
+    "InMemoryApprovalBroker",
     "PermissionBroker",
     "PolicyEngine",
     "PolicyEvaluator",
