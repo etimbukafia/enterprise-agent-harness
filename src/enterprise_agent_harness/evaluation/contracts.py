@@ -7,7 +7,7 @@ from typing import Any, Literal, Self
 
 from pydantic import Field, model_validator
 
-from ..contracts import ContractModel, OutcomeStatus
+from ..contracts import ContractModel, OutcomeStatus, PolicyDecision, ToolExecutionRecord
 from ..providers.contracts import ProviderCallRecord
 
 
@@ -44,6 +44,8 @@ class RunTrace(ContractModel):
     input_fingerprint: str = Field(min_length=1)
     events: list[TraceEvent] = Field(default_factory=list)
     provider_calls: list[ProviderCallRecord] = Field(default_factory=list)
+    policy_decisions: list[PolicyDecision] = Field(default_factory=list)
+    tool_executions: list[ToolExecutionRecord] = Field(default_factory=list)
     final_status: OutcomeStatus | None = None
     generated_at: datetime
 

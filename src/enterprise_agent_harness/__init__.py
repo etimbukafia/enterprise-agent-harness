@@ -24,18 +24,21 @@ from .contracts import (
     OutcomeStatus,
     PermissionDecision,
     PlanStep,
+    PolicyDecision,
     PolicyDefinition,
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
     ProviderProfile,
     RecoveryAction,
+    ResourceContext,
     RiskLevel,
     RuntimeConfig,
     SafetyFlag,
     ToolCall,
     ToolCallRecord,
     ToolDescriptor,
+    ToolExecutionRecord,
     ToolKind,
     ToolResult,
     ToolResultStatus,
@@ -57,7 +60,15 @@ from .errors import (
     ToolValidationError,
 )
 from .evaluation.contracts import ReplayRequest, RunTrace, TraceEvent
-from .governance.permissions import DefaultPermissionBroker, PermissionBroker
+from .governance.permissions import (
+    DeclarativePolicyEngine,
+    DefaultPermissionBroker,
+    EnvironmentConstraint,
+    PermissionBroker,
+    PolicyEngine,
+    PolicyEvaluator,
+    ResourcePolicyHook,
+)
 from .governance.safety import (
     SafetyDecision,
     SafetyPolicy,
@@ -96,7 +107,7 @@ from .providers import (
 from .runtime.context import ContextCompiler
 from .runtime.execution import AgentRuntime
 from .state.store import InMemoryStateStore, StateConflictError, StateOwnershipError, StateStore
-from .tools.definitions import ToolDefinition, ToolInvocationError
+from .tools.definitions import ToolDefinition, ToolInvocationError, ToolRetryPolicy
 from .tools.registry import ToolRegistry
 from .verification.outcomes import verify_outcome
 
@@ -124,9 +135,11 @@ __all__ = [
     "ContextCompiler",
     "ContextTrust",
     "ContractValidationError",
+    "DeclarativePolicyEngine",
     "DefaultPermissionBroker",
     "DefaultProviderCallPolicy",
     "DeterministicProvider",
+    "EnvironmentConstraint",
     "ErrorCode",
     "EvidenceRef",
     "ExecutionCancelledError",
@@ -152,9 +165,12 @@ __all__ = [
     "PlanStep",
     "PlanningRequest",
     "PlanningResponse",
+    "PolicyDecision",
     "PolicyDefinition",
     "PolicyDeniedError",
     "PolicyEffect",
+    "PolicyEngine",
+    "PolicyEvaluator",
     "PolicyRule",
     "PrincipalContext",
     "ProviderAdapter",
@@ -170,6 +186,8 @@ __all__ = [
     "ProviderTimeoutError",
     "RecoveryAction",
     "ReplayRequest",
+    "ResourceContext",
+    "ResourcePolicyHook",
     "RiskLevel",
     "RunTrace",
     "RuntimeConfig",
@@ -183,12 +201,14 @@ __all__ = [
     "ToolCallRecord",
     "ToolDefinition",
     "ToolDescriptor",
+    "ToolExecutionRecord",
     "ToolFailureError",
     "ToolInvocationError",
     "ToolKind",
     "ToolRegistry",
     "ToolResult",
     "ToolResultStatus",
+    "ToolRetryPolicy",
     "ToolValidationError",
     "TraceEvent",
     "TraceRecorder",

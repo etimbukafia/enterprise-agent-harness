@@ -1,8 +1,13 @@
 # Enterprise Agent Harness
 
-Enterprise Agent Harness is a provider-neutral Python runtime for building, governing, executing, composing, and observing enterprise AI agents.
+Enterprise Agent Harness is a provider-neutral Python runtime for building,
+governing, executing, composing, and observing enterprise AI agents.
 
-The project is independent of any one application or domain. It is intended to provide reusable infrastructure for agents that use read and write tools, run bounded or long-lived workflows, require policy and permission checks, support human approval gates, emit auditable traces, and can be registered and composed through stable contracts.
+The project is independent of any one application or domain. It provides
+reusable infrastructure for agents that use read and write tools, run bounded
+or long-lived workflows, require policy and permission checks, support human
+approval gates, emit auditable traces, and can be registered and composed
+through stable contracts.
 
 The design generalizes proven boundary patterns from `ai-assistant-harness`,
 but this repository is a separate system with broader enterprise-agent
@@ -21,13 +26,14 @@ requirements.
 
 ## Build plan
 
-See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) for the phase-by-phase implementation plan.
+See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) for the phase-by-phase
+implementation plan.
 
-The Phase 0B architecture baseline and completed Phase 1–2 boundaries are in
-[`docs/architecture.md`](docs/architecture.md).
-The product scope is in [`docs/product-brief.md`](docs/product-brief.md), the
-public API baseline is in [`docs/public-api.md`](docs/public-api.md), and the
-development commands are in [`docs/development.md`](docs/development.md).
+The Phase 0B architecture baseline and completed Phase 1-4 boundaries are in
+[`docs/architecture.md`](docs/architecture.md). The product scope is in
+[`docs/product-brief.md`](docs/product-brief.md), the public API baseline is in
+[`docs/public-api.md`](docs/public-api.md), and the development commands are
+in [`docs/development.md`](docs/development.md).
 
 ## Phase 0A implementation
 
@@ -36,20 +42,28 @@ deny-by-default permission checks, bounded execution, trust-labelled context,
 deterministic safety rules, versioned workflow state, structured audit and
 trace sinks, generic outcome verification, and trace/replay contracts.
 
-See the [source audit](docs/PHASE_0A_SOURCE_AUDIT.md), [migration matrix](docs/PHASE_0A_MIGRATION_MATRIX.md),
-and [architecture notes](docs/architecture.md) for provenance and scope.
+See the [source audit](docs/PHASE_0A_SOURCE_AUDIT.md), [migration
+matrix](docs/PHASE_0A_MIGRATION_MATRIX.md), and [architecture
+notes](docs/architecture.md) for provenance and scope.
 
 The core package does not include an evaluator. A consumer or external
 evaluation system can inspect the exported run trace.
 
-## Phase 1–2 implementation
+## Phase 1-4 implementation
 
 Phase 1 provides declarative agent, capability, policy, tool, identity,
 execution, action, approval, outcome, and error contracts. Phase 2 provides
-typed interpretation/planning/composition requests and responses, provider
-normalization, deterministic and optional OpenAI adapters, timeout/retry hooks,
-and provider metadata in exported traces.
+typed interpretation, planning, and composition requests and responses,
+provider normalization, deterministic and optional OpenAI adapters,
+timeout/retry hooks, and provider metadata in exported traces.
 
-See [`docs/public-api.md`](docs/public-api.md) for the supported imports and
-[`docs/providers.md`](docs/providers.md) for provider integration guidance, and
-[`docs/development.md`](docs/development.md) for local quality commands.
+Phase 3 provides versioned tool registration and lifecycle controls, typed
+argument and result validation, timeout and explicit retry controls,
+idempotency-key handling, dependency metadata, and redacted tool execution
+records. Phase 4 provides principal and agent allowlists, declarative
+deny-by-default policy, resource hooks, environment and risk limits, explicit
+policy records, and runtime enforcement of the authority ceiling.
+
+See [`docs/public-api.md`](docs/public-api.md) for supported imports,
+[`docs/providers.md`](docs/providers.md) for provider integration guidance,
+and [`docs/development.md`](docs/development.md) for local quality commands.

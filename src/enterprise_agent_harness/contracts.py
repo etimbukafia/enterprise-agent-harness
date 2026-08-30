@@ -92,6 +92,7 @@ class SafetyFlag(str, Enum):
     PLAN_VALIDATION_FAILED = "plan_validation_failed"
     TOOL_VALIDATION_FAILED = "tool_validation_failed"
     TOOL_FAILURE = "tool_failure"
+    TOOL_TIMEOUT = "tool_timeout"
     PROVIDER_FAILURE = "provider_failure"
     PROVIDER_TIMEOUT = "provider_timeout"
     PROVIDER_OUTPUT_INVALID = "provider_output_invalid"
@@ -159,6 +160,7 @@ class AgentLifecycleStatus(str, Enum):
     VALIDATED = "validated"
     ACTIVE = "active"
     SUSPENDED = "suspended"
+    DEPRECATED = "deprecated"
     RETIRED = "retired"
 
 
@@ -193,6 +195,8 @@ class ExecutionContext(ContractModel):
     approved_action_digests: tuple[str, ...] = ()
     max_steps: int = Field(default=3, ge=1, le=100)
     state_id: str = Field(min_length=1)
+    environment: str = Field(default="development", min_length=1)
+    max_risk_level: RiskLevel = RiskLevel.CRITICAL
 
     @model_validator(mode="after")
     def authority_lists_are_unique(self) -> Self:
@@ -331,6 +335,13 @@ class ToolDescriptor(ContractModel):
     idempotency_required: bool = False
     owner_id: str = Field(default="application", min_length=1)
     tags: list[str] = Field(default_factory=list)
+    lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.ACTIVE
+    timeout_seconds: float | None = Field(default=None, gt=0.0)
+    retryable: bool = False
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
+    dependencies: list[str] = Field(default_factory=list)
+    allowed_environments: list[str] = Field(default_factory=list)
 
 
 class EvidenceRef(ContractModel):
@@ -369,6 +380,43 @@ class ToolResult(ContractModel):
         return self
 
 
+class ResourceContext(ContractModel):
+    """Optional resource facts supplied by the consuming application."""
+
+    resource_type: str = Field(min_length=1)
+    resource_id: str | None = Field(default=None, min_length=1)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class PolicyDecision(ContractModel):
+    """Explicit deterministic result of one policy evaluation."""
+
+    schema_version: Literal["agent-policy-decision.v1"] = "agent-policy-decision.v1"
+    decision_id: str = Field(default="policy_decision", min_length=1)
+    allowed: bool
+    principal_id: str = Field(min_length=1)
+    tenant_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    tool_id: str = Field(min_length=1)
+    environment: str = Field(min_length=1)
+    risk_level: RiskLevel
+    reason_code: str = Field(min_length=1)
+    policy_id: str | None = Field(default=None, min_length=1)
+    policy_version: str | None = Field(default=None, min_length=1)
+    rule_id: str | None = Field(default=None, min_length=1)
+    matched_rule_ids: list[str] = Field(default_factory=list)
+    approval_required: bool = False
+    resource_type: str | None = Field(default=None, min_length=1)
+    resource_id: str | None = Field(default=None, min_length=1)
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def matched_rule_ids_are_unique(self) -> Self:
+        if len(self.matched_rule_ids) != len(set(self.matched_rule_ids)):
+            raise ValueError("matched_rule_ids must not contain duplicates")
+        return self
+
+
 class PermissionDecision(ContractModel):
     """Application decision for one proposed tool call."""
 
@@ -378,6 +426,10 @@ class PermissionDecision(ContractModel):
     tool_id: str = Field(min_length=1)
     reason_code: str = Field(min_length=1)
     approval_required: bool = False
+    agent_id: str | None = Field(default=None, min_length=1)
+    environment: str | None = Field(default=None, min_length=1)
+    risk_level: RiskLevel | None = None
+    policy_decision: PolicyDecision | None = None
 
 
 class ApprovalDecision(ContractModel):
@@ -470,22 +522,28 @@ class PolicyRule(ContractModel):
     rule_id: str = Field(min_length=1)
     effect: PolicyEffect
     tool_ids: list[str] = Field(default_factory=list)
+    agent_ids: list[str] = Field(default_factory=list)
     principal_ids: list[str] = Field(default_factory=list)
     tenant_ids: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
     environments: list[str] = Field(default_factory=list)
     risk_levels: list[RiskLevel] = Field(default_factory=list)
+    resource_types: list[str] = Field(default_factory=list)
+    resource_ids: list[str] = Field(default_factory=list)
     requires_approval: bool | None = None
 
     @model_validator(mode="after")
     def lists_are_unique(self) -> Self:
         for name in (
             "tool_ids",
+            "agent_ids",
             "principal_ids",
             "tenant_ids",
             "required_permissions",
             "environments",
             "risk_levels",
+            "resource_types",
+            "resource_ids",
         ):
             values = getattr(self, name)
             if len(values) != len(set(values)):
@@ -570,7 +628,24 @@ class ToolCallRecord(ContractModel):
     result_status: ToolResultStatus
     evidence_ids: list[str] = Field(default_factory=list)
     latency_ms: float = Field(default=0.0, ge=0.0)
+    retry_count: int = Field(default=0, ge=0)
     permission_reason_code: str | None = None
+
+
+class ToolExecutionRecord(ContractModel):
+    """Structured record for one registry-managed handler invocation."""
+
+    schema_version: Literal["agent-tool-execution.v1"] = "agent-tool-execution.v1"
+    execution_id: str = Field(min_length=1)
+    tool_id: str = Field(min_length=1)
+    tool_version: str = Field(min_length=1)
+    status: ToolResultStatus
+    attempts: int = Field(default=1, ge=1)
+    retry_count: int = Field(default=0, ge=0)
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    timeout_seconds: float | None = Field(default=None, gt=0.0)
+    idempotency_key_digest: str | None = Field(default=None, min_length=1)
+    error_code: str | None = Field(default=None, min_length=1)
 
 
 class VerificationResult(ContractModel):
@@ -624,6 +699,8 @@ class RuntimeConfig(ContractModel):
     provider_timeout_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
     provider_max_attempts: int = Field(default=1, ge=1, le=10)
     provider_retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
+    environment: str = Field(default="development", min_length=1)
+    max_risk_level: RiskLevel = RiskLevel.CRITICAL
 
 
 class AgentVersion(ContractModel):

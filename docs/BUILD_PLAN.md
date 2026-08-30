@@ -163,52 +163,59 @@ Keep models replaceable and prevent provider behavior from leaking into runtime 
 
 ## Phase 3: Tool Runtime and Tool Registry
 
+Status: complete. Evidence: `tools/definitions.py`, `tools/registry.py`,
+`tests/test_phase_3_tools.py`, and the quality workflow.
+
 ### Objective
 Create a safe, typed, reusable tool execution layer.
 
 ### Tasks
-- [ ] Implement in-memory `ToolRegistry`.
-- [ ] Support register, resolve, list, version, deprecate, and disable operations.
-- [ ] Validate tool arguments before execution.
-- [ ] Validate tool results after execution.
-- [ ] Add read/write/action risk classifications.
-- [ ] Add timeout support.
-- [ ] Add retry rules for explicitly retryable tools.
-- [ ] Add idempotency-key support for write tools.
-- [ ] Add tool dependency metadata.
-- [ ] Add tool ownership and tags.
-- [ ] Add tool execution tracing.
-- [ ] Add test fixtures for safe read, safe write, failing, slow, and destructive tools.
+- [x] Implement in-memory `ToolRegistry`.
+- [x] Support register, resolve, list, version, deprecate, and disable operations.
+- [x] Validate tool arguments before execution.
+- [x] Validate tool results after execution.
+- [x] Add read/write/action risk classifications.
+- [x] Add timeout support.
+- [x] Add retry rules for explicitly retryable tools.
+- [x] Add idempotency-key support for write tools.
+- [x] Add tool dependency metadata.
+- [x] Add tool ownership and tags.
+- [x] Add tool execution tracing.
+- [x] Add test fixtures for safe read, safe write, failing, slow, and destructive tools.
 
 ### Exit criteria
-- A tool cannot run with invalid arguments.
-- Write tools can be made idempotent.
-- Every invocation produces a structured trace record.
+- [x] A tool cannot run with invalid arguments.
+- [x] Write tools can be made idempotent.
+- [x] Every invocation produces a structured trace record.
 
 ---
 
 ## Phase 4: Permission and Policy Engine
 
+Status: complete. Evidence: `governance/permissions.py`, the policy and
+permission contracts, `tests/test_phase_4_governance.py`, and the quality
+workflow.
+
 ### Objective
 Make deterministic governance the authority over proposed agent actions.
 
 ### Tasks
-- [ ] Implement `PermissionBroker`.
-- [ ] Support principal-based tool permissions.
-- [ ] Support agent-specific tool allowlists.
-- [ ] Support policy checks before every action.
-- [ ] Add deny-by-default behavior.
-- [ ] Add resource-level policy hooks.
-- [ ] Add environment constraints such as development, staging, and production.
-- [ ] Add risk-tier checks.
-- [ ] Add explicit policy decision records.
-- [ ] Prevent model/provider output from modifying permissions.
-- [ ] Add tests for privilege escalation attempts.
+- [x] Implement `PermissionBroker`.
+- [x] Support principal-based tool permissions.
+- [x] Support agent-specific tool allowlists.
+- [x] Support policy checks before every action.
+- [x] Add deny-by-default behavior.
+- [x] Add resource-level policy hooks.
+- [x] Add environment constraints such as development, staging, and production.
+- [x] Add risk-tier checks.
+- [x] Add explicit policy decision records.
+- [x] Prevent model/provider output from modifying permissions.
+- [x] Add tests for privilege escalation attempts.
 
 ### Exit criteria
-- No tool call can bypass the broker.
-- Policy denials are auditable and deterministic.
-- Provider prompts cannot grant new authority.
+- [x] No tool call can bypass the broker.
+- [x] Policy denials are auditable and deterministic.
+- [x] Provider prompts cannot grant new authority.
 
 ---
 

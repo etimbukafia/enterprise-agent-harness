@@ -22,12 +22,15 @@ from ..contracts import (
     OutcomeProposal,
     OutcomeStatus,
     PermissionDecision,
+    PolicyDecision,
     PrincipalContext,
     RecoveryAction,
+    ResourceContext,
     RiskLevel,
     RuntimeConfig,
     SafetyFlag,
     ToolCallRecord,
+    ToolExecutionRecord,
     ToolResult,
     ToolResultStatus,
     VerificationResult,
@@ -61,7 +64,7 @@ from ..providers.normalization import (
     normalize_plan,
 )
 from ..state.store import InMemoryStateStore, StateConflictError, StateStore
-from ..tools.definitions import ToolInvocationError
+from ..tools.definitions import ToolDefinition, ToolInvocationError
 from ..tools.registry import ToolRegistry
 from ..verification.outcomes import verify_outcome
 from .context import ContextCompiler
@@ -131,6 +134,9 @@ class AgentRuntime:
         approved_action_digests: Sequence[str] = (),
         state_id: str | None = None,
         execution_id: str | None = None,
+        environment: str | None = None,
+        max_risk_level: RiskLevel | None = None,
+        resource: ResourceContext | None = None,
     ) -> AgentOutcome:
         """Execute one caller-supplied input through the bounded runtime."""
 
@@ -155,6 +161,8 @@ class AgentRuntime:
             approved_action_digests=tuple(approved_action_digests),
             max_steps=self.config.max_plan_steps,
             state_id=state.state_id,
+            environment=environment or self.config.environment,
+            max_risk_level=max_risk_level or self.config.max_risk_level,
         )
         trace = TraceRecorder(
             execution=execution,
@@ -346,39 +354,41 @@ class AgentRuntime:
                 },
             )
 
-            permission = self.permission_broker.authorize(
+            permission = self._authorize(
                 principal=principal,
                 execution=execution,
                 tool=tool,
                 arguments=step.arguments,
+                resource=resource,
             )
-            permission = PermissionDecision.model_validate(permission)
-            if tool.tool_id not in execution.authorized_tool_ids:
-                permission = permission.model_copy(
-                    update={
-                        "allowed": False,
-                        "reason_code": "tool_not_authorized",
-                        "approval_required": False,
-                    }
+            if permission.policy_decision is not None:
+                trace.record_policy_decision(permission.policy_decision)
+                trace.record(
+                    stage="policy",
+                    event_type="policy_decision",
+                    metadata={
+                        "tool_id": tool.tool_id,
+                        "allowed": str(permission.policy_decision.allowed).lower(),
+                        "reason_code": permission.policy_decision.reason_code,
+                    },
                 )
-            elif self.capabilities and tool.tool_id not in self._capability_tool_ids:
-                permission = permission.model_copy(
-                    update={
-                        "allowed": False,
-                        "reason_code": "tool_not_in_capability",
-                        "approval_required": False,
-                    }
-                )
-            if (
-                tool.requires_approval
-                and tool.action_digest(step.arguments) not in execution.approved_action_digests
-            ):
-                permission = permission.model_copy(
-                    update={
-                        "allowed": False,
-                        "reason_code": "approval_required",
-                        "approval_required": True,
-                    }
+                self._audit(
+                    event_type="policy_decision",
+                    principal=principal,
+                    execution=execution,
+                    tool_ids=[tool.tool_id],
+                    safety_flags=(
+                        [SafetyFlag.PERMISSION_DENIED]
+                        if not permission.policy_decision.allowed
+                        else []
+                    ),
+                    metadata={
+                        "allowed": str(permission.policy_decision.allowed).lower(),
+                        "reason_code": permission.policy_decision.reason_code,
+                        "approval_required": str(
+                            permission.policy_decision.approval_required
+                        ).lower(),
+                    },
                 )
             if not permission.allowed:
                 result_status = (
@@ -473,6 +483,15 @@ class AgentRuntime:
                         permission_reason_code=reason_code,
                     )
                 )
+                trace.record_tool_execution(
+                    ToolExecutionRecord(
+                        execution_id=execution.execution_id,
+                        tool_id=tool.tool_id,
+                        tool_version=tool.version,
+                        status=ToolResultStatus.PERMISSION_DENIED,
+                        error_code=reason_code,
+                    )
+                )
                 trace.record(
                     stage="tool",
                     event_type="tool_rejected",
@@ -503,7 +522,18 @@ class AgentRuntime:
                     event_type="tool_arguments_validated",
                     metadata={"tool_id": tool.tool_id, "step_id": step.step_id},
                 )
-                result = tool.invoke(execution, step.arguments)
+                result = self.tools.invoke(
+                    tool.tool_id,
+                    execution,
+                    step.arguments,
+                    version=tool.version,
+                    idempotency_key=step.idempotency_key,
+                    trace_callback=lambda event_type, metadata: trace.record(
+                        stage="tool",
+                        event_type=event_type,
+                        metadata=metadata,
+                    ),
+                )
                 result = _detect_indirect_injection(result)
             except ToolInvocationError as exc:
                 trace.record(
@@ -535,6 +565,20 @@ class AgentRuntime:
                     result_status=result.status,
                     evidence_ids=[item.evidence_id for item in result.evidence],
                     latency_ms=latency_ms,
+                    retry_count=_metadata_int(result.metadata, "retry_count"),
+                )
+            )
+            trace.record_tool_execution(
+                ToolExecutionRecord(
+                    execution_id=execution.execution_id,
+                    tool_id=tool.tool_id,
+                    tool_version=tool.version,
+                    status=result.status,
+                    attempts=_metadata_int(result.metadata, "attempts", default=1),
+                    retry_count=_metadata_int(result.metadata, "retry_count"),
+                    latency_ms=latency_ms,
+                    timeout_seconds=tool.timeout_seconds,
+                    error_code=result.error_code,
                 )
             )
             trace.record(
@@ -672,6 +716,213 @@ class AgentRuntime:
             operation=operation,
             call=call,
             policy=self.provider_call_policy,
+        )
+
+    def _authorize(
+        self,
+        *,
+        principal: PrincipalContext,
+        execution: ExecutionContext,
+        tool: ToolDefinition,
+        arguments: dict[str, object],
+        resource: ResourceContext | None,
+    ) -> PermissionDecision:
+        """Call a broker and enforce the runtime authority ceiling."""
+
+        broker = cast(Callable[..., object], self.permission_broker.authorize)
+        try:
+            parameters = signature(broker).parameters
+        except (TypeError, ValueError):
+            accepts_resource = True
+        else:
+            accepts_resource = "resource" in parameters or any(
+                parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters.values()
+            )
+        if accepts_resource:
+            raw_permission = broker(
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                arguments=arguments,
+                resource=resource,
+            )
+        else:
+            raw_permission = broker(
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                arguments=arguments,
+            )
+        permission = PermissionDecision.model_validate(raw_permission)
+
+        if (
+            permission.principal_id != principal.principal_id
+            or permission.tenant_id != principal.tenant_id
+            or permission.tool_id != tool.tool_id
+        ):
+            return self._deny_permission(
+                permission=permission,
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                reason_code="invalid_permission_decision",
+            )
+
+        if permission.policy_decision is None:
+            permission = permission.model_copy(
+                update={
+                    "policy_decision": self._policy_decision(
+                        principal=principal,
+                        execution=execution,
+                        tool=tool,
+                        allowed=permission.allowed,
+                        reason_code=permission.reason_code,
+                        approval_required=permission.approval_required,
+                        resource=resource,
+                    )
+                }
+            )
+        elif not permission.policy_decision.allowed:
+            return permission.model_copy(
+                update={
+                    "allowed": False,
+                    "reason_code": permission.policy_decision.reason_code,
+                    "approval_required": False,
+                }
+            )
+
+        if not permission.allowed:
+            return permission
+        if tool.tool_id not in execution.authorized_tool_ids:
+            return self._deny_permission(
+                permission=permission,
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                reason_code="tool_not_authorized",
+            )
+        if self.capabilities and tool.tool_id not in self._capability_tool_ids:
+            return self._deny_permission(
+                permission=permission,
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                reason_code="tool_not_in_capability",
+            )
+        if set(tool.required_permissions).difference(execution.granted_permissions):
+            return self._deny_permission(
+                permission=permission,
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                reason_code="required_permission_missing",
+            )
+        if tool.allowed_environments and execution.environment not in tool.allowed_environments:
+            return self._deny_permission(
+                permission=permission,
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                reason_code="tool_not_allowed_in_environment",
+            )
+        if _risk_exceeds(tool.risk_level, execution.max_risk_level):
+            return self._deny_permission(
+                permission=permission,
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                reason_code="risk_exceeds_execution_limit",
+            )
+
+        approval_required = permission.approval_required or tool.requires_approval
+        if permission.policy_decision is not None:
+            approval_required = approval_required or permission.policy_decision.approval_required
+        if approval_required:
+            if tool.action_digest(arguments) not in execution.approved_action_digests:
+                return self._deny_permission(
+                    permission=permission,
+                    principal=principal,
+                    execution=execution,
+                    tool=tool,
+                    reason_code="approval_required",
+                    approval_required=True,
+                )
+            return permission.model_copy(
+                update={"reason_code": "allowed_by_exact_approval", "approval_required": False}
+            )
+        return permission.model_copy(
+            update={
+                "agent_id": execution.agent_id,
+                "environment": execution.environment,
+                "risk_level": tool.risk_level,
+            }
+        )
+
+    def _deny_permission(
+        self,
+        *,
+        permission: PermissionDecision,
+        principal: PrincipalContext,
+        execution: ExecutionContext,
+        tool: ToolDefinition,
+        reason_code: str,
+        approval_required: bool = False,
+    ) -> PermissionDecision:
+        policy = permission.policy_decision
+        if policy is None:
+            policy = self._policy_decision(
+                principal=principal,
+                execution=execution,
+                tool=tool,
+                allowed=False,
+                reason_code=reason_code,
+                approval_required=approval_required,
+                resource=None,
+            )
+        else:
+            policy = policy.model_copy(
+                update={
+                    "allowed": False,
+                    "reason_code": reason_code,
+                    "approval_required": approval_required,
+                }
+            )
+        return permission.model_copy(
+            update={
+                "allowed": False,
+                "reason_code": reason_code,
+                "approval_required": approval_required,
+                "agent_id": execution.agent_id,
+                "environment": execution.environment,
+                "risk_level": tool.risk_level,
+                "policy_decision": policy,
+            }
+        )
+
+    def _policy_decision(
+        self,
+        *,
+        principal: PrincipalContext,
+        execution: ExecutionContext,
+        tool: ToolDefinition,
+        allowed: bool,
+        reason_code: str,
+        approval_required: bool,
+        resource: ResourceContext | None,
+    ) -> PolicyDecision:
+        return PolicyDecision(
+            decision_id=self._id("policy_decision"),
+            allowed=allowed,
+            principal_id=principal.principal_id,
+            tenant_id=principal.tenant_id,
+            agent_id=execution.agent_id,
+            tool_id=tool.tool_id,
+            environment=execution.environment,
+            risk_level=tool.risk_level,
+            reason_code=reason_code,
+            approval_required=approval_required,
+            resource_type=resource.resource_type if resource is not None else None,
+            resource_id=resource.resource_id if resource is not None else None,
         )
 
     @staticmethod
@@ -968,6 +1219,24 @@ def _higher_risk(left: RiskLevel, right: RiskLevel) -> RiskLevel:
         RiskLevel.CRITICAL: 3,
     }
     return right if order[right] > order[left] else left
+
+
+def _risk_exceeds(actual: RiskLevel, maximum: RiskLevel) -> bool:
+    order = {
+        RiskLevel.LOW: 0,
+        RiskLevel.MEDIUM: 1,
+        RiskLevel.HIGH: 2,
+        RiskLevel.CRITICAL: 3,
+    }
+    return order[actual] > order[maximum]
+
+
+def _metadata_int(metadata: dict[str, str], key: str, *, default: int = 0) -> int:
+    try:
+        value = int(metadata.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(0, value)
 
 
 def _state_status(status: OutcomeStatus) -> ExecutionStateStatus:

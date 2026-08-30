@@ -10,7 +10,7 @@ from datetime import datetime
 from threading import RLock
 from typing import Any, Protocol
 
-from ..contracts import ExecutionContext, OutcomeStatus
+from ..contracts import ExecutionContext, OutcomeStatus, PolicyDecision, ToolExecutionRecord
 from ..evaluation.contracts import RunTrace, TraceEvent
 from ..providers.contracts import ProviderCallMetadata, ProviderCallRecord, ProviderOperation
 
@@ -69,6 +69,8 @@ class TraceRecorder:
         self._input_fingerprint = fingerprint(input_text)
         self._events: list[TraceEvent] = []
         self._provider_calls: list[ProviderCallRecord] = []
+        self._policy_decisions: list[PolicyDecision] = []
+        self._tool_executions: list[ToolExecutionRecord] = []
 
     @property
     def input_fingerprint(self) -> str:
@@ -113,6 +115,16 @@ class TraceRecorder:
             )
         )
 
+    def record_policy_decision(self, decision: PolicyDecision) -> None:
+        """Record one explicit policy decision without raw action data."""
+
+        self._policy_decisions.append(decision.model_copy(deep=True))
+
+    def record_tool_execution(self, record: ToolExecutionRecord) -> None:
+        """Record one registry execution summary without raw arguments."""
+
+        self._tool_executions.append(record.model_copy(deep=True))
+
     def export(self, *, final_status: OutcomeStatus | None = None) -> RunTrace:
         """Build a machine-readable trace bundle without raw input or output."""
 
@@ -127,6 +139,8 @@ class TraceRecorder:
             input_fingerprint=self._input_fingerprint,
             events=deepcopy(self._events),
             provider_calls=deepcopy(self._provider_calls),
+            policy_decisions=deepcopy(self._policy_decisions),
+            tool_executions=deepcopy(self._tool_executions),
             final_status=final_status,
             generated_at=self._clock(),
         )

@@ -161,9 +161,12 @@ class SafetyPolicy:
                 reasons=("the tools returned no usable result",),
             )
         if not successes and failures:
+            failure_flags = [SafetyFlag.TOOL_FAILURE]
+            if any(result.error_code == "tool_timeout" for result in failures):
+                failure_flags.append(SafetyFlag.TOOL_TIMEOUT)
             return SafetyDecision(
                 status=OutcomeStatus.FAILED,
-                flags=(SafetyFlag.TOOL_FAILURE,),
+                flags=tuple(failure_flags),
                 reasons=("all proposed tool calls failed",),
                 escalation_code="all_tools_failed",
             )
@@ -171,6 +174,9 @@ class SafetyPolicy:
         if failures:
             flags.append(SafetyFlag.TOOL_FAILURE)
             reasons.append("one or more tool calls failed")
+            if any(result.error_code == "tool_timeout" for result in failures):
+                flags.append(SafetyFlag.TOOL_TIMEOUT)
+                reasons.append("one or more tool calls exceeded their timeout")
         if conflicts:
             flags.append(SafetyFlag.CONFLICTING_RESULT)
             reasons.append("tool results contain conflicting claims")

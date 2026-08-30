@@ -1,6 +1,6 @@
 # Public API baseline
 
-Status: accepted baseline for Phase 2.
+Status: accepted baseline for Phase 4.
 
 This document defines the smallest API that later phases must preserve. The
 root package may re-export additional compatibility names during the 0.x
@@ -18,9 +18,11 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.AgentVersion` | Immutable logical agent identity and release version. |
 | `enterprise_agent_harness.PrincipalContext` | Trusted principal, tenant, and session identity. |
 | `enterprise_agent_harness.ExecutionContext` | Trusted authority and execution limits. |
+| `enterprise_agent_harness.ResourceContext` | Optional application-supplied resource facts for policy checks. |
 | `enterprise_agent_harness.CapabilityDefinition` | Versioned capability metadata. |
 | `enterprise_agent_harness.PolicyDefinition` | Versioned declarative policy metadata. |
 | `enterprise_agent_harness.PolicyRule` | One typed allow or deny policy rule. |
+| `enterprise_agent_harness.PolicyDecision` | Explicit deterministic result of one policy evaluation. |
 | `enterprise_agent_harness.ToolCall` | Canonical provider-neutral tool-call proposal. |
 | `enterprise_agent_harness.ActionProposal` | Canonical proposal for a potentially side-effecting action. |
 | `enterprise_agent_harness.ApprovalRequest` | Exact action request for an approval boundary. |
@@ -34,6 +36,7 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.RiskLevel` | Declared risk classification. |
 | `enterprise_agent_harness.OutcomeStatus` | Standard final outcome state. |
 | `enterprise_agent_harness.ToolResultStatus` | Standard one-tool result state. |
+| `enterprise_agent_harness.ToolExecutionRecord` | Redacted execution summary for one registry-managed handler call. |
 
 ## Runtime and provider layer
 
@@ -55,10 +58,14 @@ when the versioning rules in `architecture.md` allow it.
 | Import | Purpose |
 | --- | --- |
 | `enterprise_agent_harness.ToolDefinition` | Application-owned typed tool boundary. |
-| `enterprise_agent_harness.ToolRegistry` | Explicit versioned tool resolution. |
+| `enterprise_agent_harness.ToolRegistry` | Versioned registration, lifecycle, resolution, and guarded execution. |
+| `enterprise_agent_harness.ToolRetryPolicy` | Explicit retry settings for a tool handler. |
 | `enterprise_agent_harness.ToolInvocationError` | Safe tool-boundary failure. |
 | `enterprise_agent_harness.PermissionBroker` | Permission decision boundary. |
-| `enterprise_agent_harness.DefaultPermissionBroker` | Deny-by-default baseline broker. |
+| `enterprise_agent_harness.DefaultPermissionBroker` | Deny-by-default broker with policy, resource, environment, and risk checks. |
+| `enterprise_agent_harness.DeclarativePolicyEngine` / `PolicyEngine` | Deterministic allow/deny policy evaluator. |
+| `enterprise_agent_harness.EnvironmentConstraint` | Environment-specific tool and risk ceiling. |
+| `enterprise_agent_harness.ResourcePolicyHook` | Application hook for resource-level policy decisions. |
 | `enterprise_agent_harness.SafetyPolicy` | Deterministic safety decision boundary. |
 
 ## Error layer
@@ -100,8 +107,10 @@ subpackages until the root export list is deliberately expanded.
 | `enterprise_agent_harness.ReplayRequest` | Replay input contract. |
 
 `RunTrace.provider_calls` contains normalized provider metadata for each
-successful provider operation. The trace does not contain raw provider
-prompts or response content.
+successful provider operation. `RunTrace.policy_decisions` contains explicit
+policy results, and `RunTrace.tool_executions` contains redacted handler
+execution summaries. The trace does not contain raw provider prompts,
+response content, idempotency keys, or tool output.
 
 ## Stability rules
 

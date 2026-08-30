@@ -1,6 +1,6 @@
 # Enterprise agent runtime architecture
 
-Status: accepted baseline for Phases 0B, 1, and 2.
+Status: accepted baseline for Phases 0B, 1, 2, 3, and 4.
 
 This document defines the boundaries and invariants for the Enterprise Agent
 Harness. Later phases can add implementations. They must not move a
@@ -153,6 +153,60 @@ Approval is a gate on one exact action. A provider cannot change the action
 after approval. Full pause, resume, expiry, and approval-broker behavior is
 defined in Phase 6; the Phase 0A boundary already denies an unapproved action.
 
+## Tool runtime and registry
+
+`ToolDefinition` is the application-owned typed tool boundary. It declares the
+tool identity, version, input and output models, kind, risk, permissions,
+approval requirement, ownership, tags, dependencies, allowed environments,
+timeout, and explicit retry settings.
+
+`ToolRegistry` owns in-memory registration and exact resolution. It supports
+registration, lookup, listing, version lookup, deprecation, suspension, and
+retirement. Only active versions resolve for execution. A provider receives a
+`ToolDescriptor`, which contains metadata and schemas but never a handler.
+
+The registry validates arguments before it calls a handler. It validates every
+returned output and result envelope after the call. It records attempts,
+latency, timeout, retry, and idempotency metadata. Retry is disabled unless the
+tool declares it. A write or action retry also needs an idempotency key.
+
+The in-memory registry stores successful results for an exact idempotency key.
+Reuse with different arguments fails closed. A durable consumer must replace
+this local record with a durable idempotency store before it uses a process
+restart or multiple workers for side-effecting work.
+
+Python cannot force-stop a running synchronous handler. A registry timeout
+stops waiting and records a timeout. The handler may still finish in its worker
+thread. Application handlers must therefore make side effects idempotent and
+must use their own cancellation or remote timeout controls for production.
+
+## Permission and policy engine
+
+`DefaultPermissionBroker` evaluates every provider-proposed call. It first
+checks the trusted execution allowlist, principal tool permissions, agent
+allowlists, required permissions, environment limits, risk ceilings, and
+declarative policy. It then checks resource policy hooks and exact approval
+evidence. A handler is not called when any check denies the call.
+
+`PolicyDefinition` uses ordered typed rules with allow or deny effects. An
+empty rule field matches any value. A matching deny wins over an allow. When a
+policy set has no matching allow, its deny default applies. Inactive policies
+are not executable. Rules can select an agent, principal, tenant, tool,
+environment, risk tier, resource type, or resource ID. A rule can also require
+approval.
+
+Principal mappings, agent mappings, environment constraints, and policy rules
+can only reduce the trusted authority in `ExecutionContext`. They cannot add a
+tool, permission, approval, or risk budget. The runtime applies the same
+ceiling after a custom broker returns, so a custom implementation cannot grant
+authority above the context.
+
+Each evaluation returns a `PolicyDecision`. The runtime stores that record in
+`RunTrace.policy_decisions` and emits a redacted `policy_decision` trace and
+audit event. Resource hooks receive application facts and proposed arguments;
+their data is not authority and their result cannot expand the execution
+context.
+
 ## Provider boundary
 
 The runtime communicates with a provider through three typed operations:
@@ -190,6 +244,7 @@ controlled rollout, but every run selects one exact version.
 | `validated` | The definition and referenced versions pass schema, dependency, compatibility, and policy checks. | No execution until activation. The version is frozen for activation. |
 | `active` | The version is approved for use. | New executions may start. |
 | `suspended` | Use is stopped by an owner or governance decision. | No new execution or resume. An in-flight run stops at its next safe runtime boundary; a currently running external handler is not assumed interruptible. |
+| `deprecated` | The version remains recorded but must not receive new calls. | No new execution. A replacement version is required. |
 | `retired` | The version is permanently removed from service. | No new execution or resume. A replacement version is required. |
 
 Allowed transitions are:

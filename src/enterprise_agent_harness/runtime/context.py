@@ -78,7 +78,8 @@ class ContextCompiler:
                 source="runtime_execution",
                 content=(
                     f"execution_id={execution.execution_id}; agent_id={execution.agent_id}; "
-                    f"agent_version={execution.agent_version}; max_steps={execution.max_steps}"
+                    f"agent_version={execution.agent_version}; max_steps={execution.max_steps}; "
+                    f"environment={execution.environment}; max_risk={execution.max_risk_level.value}"
                 ),
                 priority=90,
             ),

@@ -1,6 +1,6 @@
 # Product brief
 
-Status: accepted product scope; implementation baseline through Phase 2.
+Status: accepted product scope; implementation baseline through Phase 4.
 
 ## Product
 

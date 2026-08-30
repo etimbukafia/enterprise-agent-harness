@@ -1,6 +1,14 @@
 """Deterministic authority and safety boundaries."""
 
-from .permissions import DefaultPermissionBroker, PermissionBroker
+from .permissions import (
+    DeclarativePolicyEngine,
+    DefaultPermissionBroker,
+    EnvironmentConstraint,
+    PermissionBroker,
+    PolicyEngine,
+    PolicyEvaluator,
+    ResourcePolicyHook,
+)
 from .safety import (
     SafetyDecision,
     SafetyPolicy,
@@ -9,8 +17,13 @@ from .safety import (
 )
 
 __all__ = [
+    "DeclarativePolicyEngine",
     "DefaultPermissionBroker",
+    "EnvironmentConstraint",
     "PermissionBroker",
+    "PolicyEngine",
+    "PolicyEvaluator",
+    "ResourcePolicyHook",
     "SafetyDecision",
     "SafetyPolicy",
     "direct_injection_matches",
