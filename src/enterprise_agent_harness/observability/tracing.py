@@ -61,16 +61,35 @@ class TraceRecorder:
         sink: TraceSink,
         id_factory: Callable[[str], str],
         clock: Callable[[], datetime],
+        initial_trace: RunTrace | None = None,
     ) -> None:
         self.execution = execution
         self.sink = sink
         self._id = id_factory
         self._clock = clock
         self._input_fingerprint = fingerprint(input_text)
-        self._events: list[TraceEvent] = []
-        self._provider_calls: list[ProviderCallRecord] = []
-        self._policy_decisions: list[PolicyDecision] = []
-        self._tool_executions: list[ToolExecutionRecord] = []
+        if initial_trace is not None and (
+            initial_trace.execution_id != execution.execution_id
+            or initial_trace.agent_id != execution.agent_id
+            or initial_trace.agent_version != execution.agent_version
+            or initial_trace.principal_id != execution.principal.principal_id
+            or initial_trace.tenant_id != execution.principal.tenant_id
+            or initial_trace.session_id != execution.principal.session_id
+            or initial_trace.input_fingerprint != self._input_fingerprint
+        ):
+            raise ValueError("initial trace does not match the execution")
+        self._events: list[TraceEvent] = (
+            deepcopy(initial_trace.events) if initial_trace is not None else []
+        )
+        self._provider_calls: list[ProviderCallRecord] = (
+            deepcopy(initial_trace.provider_calls) if initial_trace is not None else []
+        )
+        self._policy_decisions: list[PolicyDecision] = (
+            deepcopy(initial_trace.policy_decisions) if initial_trace is not None else []
+        )
+        self._tool_executions: list[ToolExecutionRecord] = (
+            deepcopy(initial_trace.tool_executions) if initial_trace is not None else []
+        )
 
     @property
     def input_fingerprint(self) -> str:

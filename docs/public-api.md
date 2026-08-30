@@ -1,6 +1,6 @@
 # Public API baseline
 
-Status: accepted baseline for Phase 6.
+Status: accepted baseline for Phase 8.
 
 This document defines the smallest API that later phases must preserve. The
 root package may re-export additional compatibility names during the 0.x
@@ -36,11 +36,19 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.ToolResult` | Typed, untrusted tool result envelope. |
 | `enterprise_agent_harness.OutcomeProposal` | Provider proposal for an outcome. |
 | `enterprise_agent_harness.AgentOutcome` | Runtime-owned final outcome. |
+| `enterprise_agent_harness.ExecutionCheckpoint` | Versioned, owner-bound continuation data for a paused execution. |
+| `enterprise_agent_harness.RegistryDependency` | Exact dependency edge in a registry snapshot. |
+| `enterprise_agent_harness.RegistrySnapshot` | Versioned, deterministic view of agent, capability, tool, policy, and dependency records. |
 | `enterprise_agent_harness.ToolKind` | Read, write, or action classification. |
 | `enterprise_agent_harness.RiskLevel` | Declared risk classification. |
 | `enterprise_agent_harness.OutcomeStatus` | Standard final outcome state. |
 | `enterprise_agent_harness.ToolResultStatus` | Standard one-tool result state. |
 | `enterprise_agent_harness.ToolExecutionRecord` | Redacted execution summary for one registry-managed handler call. |
+
+`AgentDefinition` includes supported intents and languages, owner and
+lifecycle metadata, exact capability/tool/policy references, risk level, and
+optional performance metadata. Registry records are immutable by exact
+identity and version; a correction is registered as a new version.
 
 ## Runtime and provider layer
 
@@ -76,6 +84,27 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.EnvironmentConstraint` | Environment-specific tool and risk ceiling. |
 | `enterprise_agent_harness.ResourcePolicyHook` | Application hook for resource-level policy decisions. |
 | `enterprise_agent_harness.SafetyPolicy` | Deterministic safety decision boundary. |
+
+## Registry layer
+
+| Import | Purpose |
+| --- | --- |
+| `enterprise_agent_harness.AgentRegistry` | Register, validate, activate, suspend, deprecate, retire, resolve, search, and snapshot agent definitions. |
+| `enterprise_agent_harness.CapabilityRegistry` | Register, validate, activate, suspend, deprecate, retire, resolve, search, and snapshot capability definitions. |
+| `enterprise_agent_harness.RegistryAuditEvent` | Versioned audit record for registry mutations and snapshots. |
+| `enterprise_agent_harness.RegistryAuditSink` | Application storage boundary for registry audit events. |
+| `enterprise_agent_harness.ListRegistryAuditSink` | Thread-safe in-memory audit sink for local use and tests. |
+| `enterprise_agent_harness.RegistryError` | Base registry lookup and lifecycle error. |
+| `enterprise_agent_harness.DuplicateRegistrationError` | Exact identity/version is already registered. |
+| `enterprise_agent_harness.StaleRegistrationError` | An immutable registered version was targeted for replacement. |
+| `enterprise_agent_harness.IncompatibleRegistrationError` | A referenced tool, capability, or policy is missing, inactive, or exceeds the risk boundary. |
+| `enterprise_agent_harness.RegistryLifecycleError` | A requested lifecycle transition is not allowed. |
+
+Registry queries return deep copies and therefore cannot mutate registered
+definitions. Activation checks exact dependency versions, active lifecycle
+states, and risk ceilings. `snapshot()` returns stable ordering and exact
+dependency edges for deterministic planning; its ID, timestamp, and revision
+are retained as audit evidence.
 
 `AgentRuntime.execute` accepts `timeout_seconds` and a
 `cancellation_event`. The event can be a standard `threading.Event` or a
@@ -115,13 +144,19 @@ grants authority to another tool or argument set.
 
 ## State, memory, and evidence layer
 
-The protocols are public extension points. They are imported from their
-subpackages until the root export list is deliberately expanded.
+The protocols are public extension points. The state implementations and
+retention errors are also re-exported from the package root for the common
+durable-execution path.
 
 | Import | Purpose |
 | --- | --- |
 | `enterprise_agent_harness.state.StateStore` | Versioned workflow-state storage boundary. |
 | `enterprise_agent_harness.state.InMemoryStateStore` | Deterministic local state store. |
+| `enterprise_agent_harness.state.SQLiteStateStore` | SQLite-backed state store with schema migrations, JSON data, owner checks, optimistic concurrency, and retention hooks. |
+| `enterprise_agent_harness.state.StateRetentionHook` | Application retention callback evaluated by `purge_expired()`. |
+| `enterprise_agent_harness.state.StateConflictError` | Optimistic version check failed. |
+| `enterprise_agent_harness.state.StateOwnershipError` | A principal, tenant, or session boundary was violated. |
+| `enterprise_agent_harness.state.StateSerializationError` | State data could not be encoded or decoded as JSON. |
 | `enterprise_agent_harness.memory.MemoryStrategy` | Optional memory boundary. |
 | `enterprise_agent_harness.memory.BoundedMemory` | Bounded local memory strategy. |
 | `enterprise_agent_harness.observability.AuditSink` | Audit-event storage boundary. |
@@ -143,6 +178,14 @@ successful provider operation. `RunTrace.policy_decisions` contains explicit
 policy results, and `RunTrace.tool_executions` contains redacted handler
 execution summaries. The trace does not contain raw provider prompts,
 response content, idempotency keys, or tool output.
+
+`ExecutionCheckpoint` is stored in the workflow state's `data` by the runtime
+when an approval-gated execution pauses. It contains the exact execution
+context, remaining plan, reviewed request, prior typed evidence, and redacted
+trace. A restarted runtime must call `resume(execution_id, principal=...)` so
+the state store can enforce the owner boundary. The approval broker remains an
+application-owned boundary; a process-restart deployment must provide a
+durable broker or pass independently persisted, exact approval evidence.
 
 ## Stability rules
 

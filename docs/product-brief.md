@@ -1,6 +1,6 @@
 # Product brief
 
-Status: accepted product scope; implementation baseline through Phase 6.
+Status: accepted product scope; implementation baseline through Phase 8.
 
 ## Product
 
@@ -51,7 +51,10 @@ The target product provides:
 - stable export contracts for external evaluation and replay.
 
 The build plan defines when each responsibility becomes executable. A
-baseline document does not claim that a later-phase feature is complete.
+baseline document does not claim that a later-phase feature is complete. The
+current implementation includes owner-bound durable workflow checkpoints and
+versioned agent/capability discovery; the factory, delegation, scheduling,
+and production integrations remain later-phase work.
 
 ## Supported execution modes
 
@@ -80,6 +83,10 @@ An integration is successful when:
    trace and audit data.
 7. An external evaluator can consume the exported trace without importing
    private runtime code.
+8. A paused execution can be hydrated from durable state without allowing a
+   different principal or a new provider proposal to change its authority.
+9. A consumer can discover compatible, versioned agents and capabilities from
+   registry metadata without inspecting implementation code.
 
 ## Explicit non-goals
 

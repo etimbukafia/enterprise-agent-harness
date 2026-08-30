@@ -277,47 +277,53 @@ Support sensitive actions without forcing all workflows to be fully autonomous.
 
 ## Phase 7: State, Memory, and Durable Execution
 
+Status: complete. Evidence: `state/store.py`, `runtime/execution.py`,
+`contracts.py`, `tests/test_phase_7_state.py`, and the quality workflow.
+
 ### Objective
 Support enterprise workflows that outlive a single request.
 
 ### Tasks
-- [ ] Separate conversation/session memory from workflow state.
-- [ ] Define a `StateStore` interface.
-- [ ] Add in-memory implementation.
-- [ ] Add durable implementation, initially SQLite or PostgreSQL.
-- [ ] Support checkpoint and resume.
-- [ ] Add optimistic concurrency/version checks.
-- [ ] Add TTL and retention hooks.
-- [ ] Prevent untrusted retrieved text from becoming policy or authority.
-- [ ] Add state migration/versioning strategy.
-- [ ] Add crash/restart tests.
+- [x] Separate conversation/session memory from workflow state.
+- [x] Define a `StateStore` interface.
+- [x] Add in-memory implementation.
+- [x] Add durable implementation, initially SQLite or PostgreSQL.
+- [x] Support checkpoint and resume.
+- [x] Add optimistic concurrency/version checks.
+- [x] Add TTL and retention hooks.
+- [x] Prevent untrusted retrieved text from becoming policy or authority.
+- [x] Add state migration/versioning strategy.
+- [x] Add crash/restart tests.
 
 ### Exit criteria
-- An execution can pause, process restart, and resume correctly.
-- State ownership and principal boundaries are enforced.
+- [x] An execution can pause, process restart, and resume correctly.
+- [x] State ownership and principal boundaries are enforced.
 
 ---
 
 ## Phase 8: Agent Registry and Capability Registry
 
+Status: complete. Evidence: `registries.py`, `contracts.py`,
+`tests/test_phase_8_registries.py`, and the quality workflow.
+
 ### Objective
 Make agents and their capabilities discoverable and reusable.
 
 ### Tasks
-- [ ] Implement `AgentRegistry`.
-- [ ] Implement `CapabilityRegistry`.
-- [ ] Store goal, supported intents, tools, policies, risk level, language support, owner, version, status, and performance metadata.
-- [ ] Support activate, suspend, deprecate, and retire lifecycle operations.
-- [ ] Add capability search.
-- [ ] Add compatibility checks between agents, tools, and policies.
-- [ ] Add dependency graphs.
-- [ ] Add registry snapshots for deterministic planning.
-- [ ] Add read-only registry query API.
-- [ ] Add tests for duplicate, incompatible, and stale registrations.
+- [x] Implement `AgentRegistry`.
+- [x] Implement `CapabilityRegistry`.
+- [x] Store goal, supported intents, tools, policies, risk level, language support, owner, version, status, and performance metadata.
+- [x] Support activate, suspend, deprecate, and retire lifecycle operations.
+- [x] Add capability search.
+- [x] Add compatibility checks between agents, tools, and policies.
+- [x] Add dependency graphs.
+- [x] Add registry snapshots for deterministic planning.
+- [x] Add read-only registry query API.
+- [x] Add tests for duplicate, incompatible, and stale registrations.
 
 ### Exit criteria
-- A consumer can ask what capabilities already exist without inspecting code.
-- Registry state is versioned and auditable.
+- [x] A consumer can ask what capabilities already exist without inspecting code.
+- [x] Registry state is versioned and auditable.
 
 ---
 
@@ -513,12 +519,13 @@ For the first useful release, complete:
 6. Phase 4: Permission and Policy Engine
 7. Phase 5: Bounded Agent Runtime
 8. Phase 6: Human Approval Gates
-9. Phase 8: Registries
-10. Phase 9: Agent Factory
-11. Phase 12: Observability and Audit
-12. Phase 14: External Evaluation Contract
+9. Phase 7: Durable Execution
+10. Phase 8: Registries
+11. Phase 9: Agent Factory
+12. Phase 12: Observability and Audit
+13. Phase 14: External Evaluation Contract
 
-Then add durable execution, composition, background agents, and hardening.
+Then add composition, background agents, and hardening.
 
 ## v0.1 milestone
 

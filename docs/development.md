@@ -1,6 +1,6 @@
 # Development workflow
 
-Status: accepted baseline through Phase 6.
+Status: accepted baseline through Phase 8.
 
 ## Supported layout
 
@@ -27,12 +27,13 @@ The package directories have one responsibility each:
 | `tools/` | Typed tool definitions and resolution. |
 | `governance/` | Permission and safety decisions. |
 | `runtime/` | Context compilation and execution coordination. |
-| `state/` | Workflow-state storage contracts. |
+| `state/` | Principal-bound in-memory and SQLite workflow-state storage. |
 | `memory/` | Optional memory strategies. |
 | `observability/` | Audit and trace sinks. |
 | `verification/` | Provider-output verification. |
 | `evaluation/` | Runtime trace and replay contracts only. |
-| `capabilities/` | Capability contracts and, later, discovery. |
+| `capabilities/` | Capability contracts and registry export. |
+| `registries.py` | Versioned agent and capability discovery, lifecycle, compatibility, and snapshots. |
 
 ## Local commands
 

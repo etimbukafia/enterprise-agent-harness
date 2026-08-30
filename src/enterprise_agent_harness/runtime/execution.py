@@ -22,6 +22,7 @@ from ..contracts import (
     ApprovalPolicyDecision,
     ApprovalRequest,
     CompiledContext,
+    ExecutionCheckpoint,
     ExecutionContext,
     ExecutionState,
     ExecutionStateStatus,
@@ -320,6 +321,7 @@ class AgentRuntime:
         approval_decision: ApprovalDecision | None = None,
         *,
         approval: ApprovalDecision | None = None,
+        principal: PrincipalContext | None = None,
     ) -> AgentOutcome:
         """Resume a paused execution after its exact request is decided."""
 
@@ -327,8 +329,12 @@ class AgentRuntime:
             raise ValueError("provide only one approval decision")
         with self._pending_lock:
             pending = self._pending_approvals.get(execution_id)
+        if pending is None and principal is not None:
+            pending = self._restore_pending_approval(principal, execution_id)
         if pending is None:
             raise KeyError(f"unknown or non-paused execution: {execution_id}")
+        if principal is not None and pending.principal != principal:
+            raise ValueError("resume principal does not own the execution")
 
         decision = approval_decision or approval
         if decision is None and self.approval_broker is not None:
@@ -1938,6 +1944,111 @@ class AgentRuntime:
                 trace=trace,
                 trace_prefix=trace_prefix.model_copy(deep=True) if trace_prefix else None,
             )
+            pending = self._pending_approvals[execution.execution_id]
+        self._persist_pending_checkpoint(pending)
+
+    def _restore_pending_approval(
+        self,
+        principal: PrincipalContext,
+        execution_id: str,
+    ) -> _PendingApproval | None:
+        """Hydrate a paused approval from a state-store checkpoint."""
+
+        state = self.state_store.find_execution(principal, execution_id)
+        if state is None or state.status != ExecutionStateStatus.PAUSED:
+            return None
+        if state.execution_id != execution_id:
+            return None
+        raw_checkpoint = state.data.get("checkpoint")
+        if not isinstance(raw_checkpoint, dict):
+            return None
+        checkpoint = ExecutionCheckpoint.model_validate(raw_checkpoint)
+        if checkpoint.execution.execution_id != execution_id:
+            raise ValueError("checkpoint execution does not match the requested execution")
+        if checkpoint.execution.principal != principal:
+            raise ValueError("checkpoint principal does not own the execution")
+        if (
+            checkpoint.execution.agent_id != state.agent_id
+            or checkpoint.execution.agent_version != state.agent_version
+            or checkpoint.execution.state_id != state.state_id
+        ):
+            raise ValueError("checkpoint execution does not match stored state")
+        initial_trace: RunTrace | None = None
+        if checkpoint.trace is not None:
+            initial_trace = RunTrace.model_validate(checkpoint.trace)
+        trace = TraceRecorder(
+            execution=checkpoint.execution,
+            input_text=checkpoint.input_text,
+            sink=self.trace_sink,
+            id_factory=self._id,
+            clock=self._clock,
+            initial_trace=initial_trace,
+        )
+        pending = _PendingApproval(
+            principal=principal,
+            execution=checkpoint.execution,
+            input_text=checkpoint.input_text,
+            resource=checkpoint.resource,
+            plan=checkpoint.plan,
+            resume_plan=checkpoint.resume_plan,
+            tool_calls=[call.model_copy(deep=True) for call in checkpoint.tool_calls],
+            tool_results=[result.model_copy(deep=True) for result in checkpoint.tool_results],
+            highest_risk=checkpoint.highest_risk,
+            request=checkpoint.approval_request,
+            outcome=checkpoint.outcome,
+            trace=trace,
+        )
+        with self._pending_lock:
+            current = self._pending_approvals.get(execution_id)
+            if current is not None:
+                return current
+            self._pending_approvals[execution_id] = pending
+        return pending
+
+    def _persist_pending_checkpoint(
+        self,
+        pending: _PendingApproval,
+        *,
+        trace: RunTrace | None = None,
+    ) -> None:
+        """Store enough trusted continuation data to resume after a restart."""
+
+        state = self.state_store.find_execution(pending.principal, pending.execution.execution_id)
+        if state is None:
+            raise StateConflictError("pending execution state is missing")
+        if state.status not in {ExecutionStateStatus.ESCALATED, ExecutionStateStatus.PAUSED}:
+            raise StateConflictError("pending execution state is no longer resumable")
+        checkpoint = ExecutionCheckpoint(
+            checkpoint_id=f"checkpoint:{pending.request.request_id}",
+            execution=pending.execution,
+            input_text=pending.input_text,
+            resource=pending.resource,
+            plan=pending.plan,
+            resume_plan=pending.resume_plan,
+            tool_calls=pending.tool_calls,
+            tool_results=pending.tool_results,
+            highest_risk=pending.highest_risk,
+            approval_request=pending.request,
+            outcome=pending.outcome,
+            trace=(trace or pending.trace.export(final_status=pending.outcome.status)).model_dump(
+                mode="json"
+            ),
+            created_at=pending.request.created_at,
+            updated_at=self._clock(),
+        )
+        next_state = state.model_copy(
+            update={
+                "status": ExecutionStateStatus.PAUSED,
+                "version": state.version + 1,
+                "data": {
+                    **state.data,
+                    "checkpoint": checkpoint.model_dump(mode="json"),
+                },
+                "updated_at": self._clock(),
+            },
+            deep=True,
+        )
+        self.state_store.save(next_state, expected_version=state.version)
 
     def _close_pending_approval(
         self,
@@ -2024,11 +2135,14 @@ class AgentRuntime:
         )
         merged = self._merge_trace_bundle(previous, outcome)
         merged_trace = self.trace_for(outcome.execution_id)
+        next_pending: _PendingApproval | None
         with self._pending_lock:
             next_pending = self._pending_approvals.get(outcome.execution_id)
             if next_pending is not None:
                 next_pending.trace_prefix = merged_trace
                 next_pending.trace_prefix_event_count = len(next_pending.trace.export().events)
+        if next_pending is not None:
+            self._persist_pending_checkpoint(next_pending, trace=merged_trace)
         return merged
 
     def _pending_trace_history(

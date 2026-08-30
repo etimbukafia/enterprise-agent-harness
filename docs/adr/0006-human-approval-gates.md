@@ -66,9 +66,9 @@ event metadata.
 - A decision cannot grant authority to another tool, version, or argument
   payload.
 - Reviewer decisions are immutable within the in-memory broker.
-- A process-local broker does not provide restart recovery or distributed
-  coordination. Durable approval and checkpoint storage remain later state
-  responsibilities.
+- A process-local broker does not provide approval-decision restart recovery
+  or distributed coordination. Phase 7 adds durable workflow checkpoints,
+  while the consumer remains responsible for durable approval storage.
 - Applications must treat an approved write as an ordinary side effect and
   keep the tool idempotent where duplicate execution can cause harm.
 

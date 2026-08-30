@@ -347,15 +347,24 @@ class CapabilityDefinition(ContractModel):
     version: str = Field(min_length=1)
     description: str = Field(min_length=1)
     supported_operations: list[str] = Field(min_length=1)
+    supported_intents: list[str] = Field(default_factory=list)
+    supported_languages: list[str] = Field(default_factory=list)
     allowed_tool_ids: list[str] = Field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.LOW
     owner_id: str = Field(default="application", min_length=1)
     lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.ACTIVE
     tags: list[str] = Field(default_factory=list)
+    performance_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def lists_are_unique(self) -> Self:
-        for name in ("supported_operations", "allowed_tool_ids", "tags"):
+        for name in (
+            "supported_operations",
+            "supported_intents",
+            "supported_languages",
+            "allowed_tool_ids",
+            "tags",
+        ):
             values = getattr(self, name)
             if len(values) != len(set(values)):
                 raise ValueError(f"{name} must not contain duplicates")
@@ -861,6 +870,46 @@ class AgentOutcome(ContractModel):
         return self
 
 
+class ExecutionCheckpoint(ContractModel):
+    """Serializable continuation data for one paused workflow execution."""
+
+    schema_version: Literal["agent-execution-checkpoint.v1"] = "agent-execution-checkpoint.v1"
+    checkpoint_id: str = Field(min_length=1)
+    execution: ExecutionContext
+    input_text: str = Field(min_length=1)
+    resource: ResourceContext | None = None
+    plan: AgentPlan
+    resume_plan: AgentPlan
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    tool_results: list[ToolResult] = Field(default_factory=list)
+    highest_risk: RiskLevel = RiskLevel.LOW
+    approval_request: ApprovalRequest
+    outcome: AgentOutcome
+    trace: dict[str, Any] | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def checkpoint_is_consistent(self) -> Self:
+        if self.approval_request.execution_id != self.execution.execution_id:
+            raise ValueError("checkpoint approval execution does not match execution")
+        if self.outcome.execution_id != self.execution.execution_id:
+            raise ValueError("checkpoint outcome execution does not match execution")
+        if self.execution.principal.principal_id != self.approval_request.principal_id:
+            raise ValueError("checkpoint principal does not match approval request")
+        if self.execution.principal.tenant_id != self.approval_request.tenant_id:
+            raise ValueError("checkpoint tenant does not match approval request")
+        for name, value in (
+            ("created_at", self.created_at),
+            ("updated_at", self.updated_at),
+        ):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{name} must include timezone information")
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at must not precede created_at")
+        return self
+
+
 class RuntimeConfig(ContractModel):
     """Deterministic runtime limits and safety thresholds."""
 
@@ -918,6 +967,8 @@ class AgentDefinition(ContractModel):
     schema_version: Literal["agent-definition.v1"] = "agent-definition.v1"
     identity: AgentVersion
     goal: str = Field(min_length=1)
+    supported_intents: list[str] = Field(default_factory=list)
+    supported_languages: list[str] = Field(default_factory=list)
     capabilities: list[VersionReference] = Field(default_factory=list)
     allowed_tools: list[VersionReference] = Field(default_factory=list)
     policies: list[VersionReference] = Field(default_factory=list)
@@ -929,6 +980,7 @@ class AgentDefinition(ContractModel):
     memory_strategy: str | None = Field(default=None, min_length=1)
     owner_id: str = Field(default="application", min_length=1)
     lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.DRAFT
+    performance_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -952,9 +1004,19 @@ class AgentDefinition(ContractModel):
 
     @model_validator(mode="after")
     def references_are_unique(self) -> Self:
-        for name in ("capabilities", "allowed_tools", "policies", "approval_requirements"):
+        for name in (
+            "supported_intents",
+            "supported_languages",
+            "capabilities",
+            "allowed_tools",
+            "policies",
+            "approval_requirements",
+        ):
             values = getattr(self, name)
-            if name == "approval_requirements":
+            if name == "approval_requirements" or name in {
+                "supported_intents",
+                "supported_languages",
+            }:
                 keys = values
             else:
                 keys = [(item.component_id, item.version) for item in values]
@@ -973,3 +1035,36 @@ class AgentDefinition(ContractModel):
         """Return the immutable agent version."""
 
         return self.identity.version
+
+
+class RegistryDependency(ContractModel):
+    """One exact dependency edge in a registry snapshot."""
+
+    schema_version: Literal["agent-registry-dependency.v1"] = "agent-registry-dependency.v1"
+    source_kind: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    source_version: str = Field(min_length=1)
+    target_kind: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    target_version: str = Field(min_length=1)
+    relation: str = Field(min_length=1)
+
+
+class RegistrySnapshot(ContractModel):
+    """Immutable view of exact registry records for deterministic planning."""
+
+    schema_version: Literal["agent-registry-snapshot.v1"] = "agent-registry-snapshot.v1"
+    snapshot_id: str = Field(min_length=1)
+    revision: int = Field(ge=0)
+    generated_at: datetime = Field(default_factory=utc_now)
+    agents: list[AgentDefinition] = Field(default_factory=list)
+    capabilities: list[CapabilityDefinition] = Field(default_factory=list)
+    tools: list[ToolDescriptor] = Field(default_factory=list)
+    policies: list[PolicyDefinition] = Field(default_factory=list)
+    dependencies: list[RegistryDependency] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def timestamp_is_aware(self) -> Self:
+        if self.generated_at.tzinfo is None or self.generated_at.utcoffset() is None:
+            raise ValueError("generated_at must include timezone information")
+        return self

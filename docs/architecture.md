@@ -1,6 +1,6 @@
 # Enterprise agent runtime architecture
 
-Status: accepted baseline through Phase 6.
+Status: accepted baseline through Phase 8.
 
 This document defines the boundaries and invariants for the Enterprise Agent
 Harness. Later phases can add implementations. They must not move a
@@ -32,10 +32,14 @@ versioned agent definition declares:
 - provider profile;
 - runtime limits;
 - risk level; and
-- state and memory strategies when they are used.
+- state and memory strategies when they are used;
+- supported intents and languages; and
+- owner, lifecycle, and performance metadata.
 
-The agent factory will resolve this declaration from approved registries in a
-later phase. A resolved manifest pins every dependency version before an
+`AgentRegistry` and `CapabilityRegistry` resolve exact, compatible versions
+from application-owned records. The later agent factory may assemble a
+runtime from these records, but registry lookup and lifecycle enforcement are
+already available. A resolved manifest pins every dependency version before an
 execution starts.
 
 ## Core invariants
@@ -62,7 +66,9 @@ These invariants apply to every execution mode:
     secrets and sensitive content are not stored by default.
 11. Exact component and contract versions are captured for a run. An
     in-flight run does not silently resolve a new version.
-12. Evaluation systems consume exported behavior. Evaluation policy does not
+12. A paused execution checkpoint is owner-bound, versioned, and resumed only
+    through the same governed plan and authority checks.
+13. Evaluation systems consume exported behavior. Evaluation policy does not
     control runtime authority.
 
 ## Responsibility boundaries
@@ -77,7 +83,7 @@ These invariants apply to every execution mode:
 | Policy | Invoke the policy boundary and enforce the runtime safety ceiling. | Define business policy, resource rules, environment rules, and policy decisions. |
 | Approval | Preserve the exact action and enforce the approval gate. | Supply approvers, approval policy, review interface, and decision authority. |
 | Context | Compile trust-labelled blocks and bound context size. | Supply input, domain data, and optional memory values. |
-| State | Define ownership, version, and resume contracts. | Choose durable storage, encryption, retention, and deployment. |
+| State | Define ownership, version, resume, migration, and retention-hook contracts; persist trusted continuation data. | Choose durable storage, encryption, retention, backups, and deployment. |
 | Memory | Provide an optional strategy boundary and safety labels. | Choose memory content, retrieval, retention, and deletion policy. |
 | Registry | Define records, resolution, lifecycle checks, and compatibility checks. | Own registration, metadata, approval to activate, and operational storage. |
 | Trace and audit | Define event contracts, sequencing, and default redaction. | Choose sinks, retention, access control, and downstream analysis. |
@@ -158,18 +164,62 @@ outcome when a control stops the run. A plan cannot exceed
 
 Approval is a gate on one exact action. A provider cannot change the action
 after approval. When an application supplies an `ApprovalBroker`, the runtime
-stores the exact action and initial context in a pending request. It returns
-`escalated` when no decision is available. A later `resume` checks the request
-ID, action digest, and approval expiry before the handler runs, then continues
-the stored bounded plan from the paused step. A rejection returns `refused`.
-A request for changes returns `needs_input`.
+stores the exact action and continuation checkpoint in owner-bound workflow
+state. It returns `escalated` when no decision is available. A later `resume`
+checks the request ID, action digest, and approval expiry before the handler
+runs, then continues the stored bounded plan from the paused step. A rejection
+returns `refused`. A request for changes returns `needs_input`.
 
 `ApprovalPolicy` rules can add approval requirements by tool ID, action ID or
 kind, risk level, and environment. A policy can reduce autonomy but cannot
 remove a requirement declared by a tool or a trusted permission decision.
 `InMemoryApprovalBroker` is suitable for deterministic tests and one process.
-Durable approval storage and process-restart recovery remain later state
-responsibilities.
+For process-restart recovery, the consumer must provide a durable approval
+broker or pass independently persisted, exact approval evidence. The runtime's
+SQLite checkpoint persists the continuation data but does not claim ownership
+of the approval service or its reviewer identity.
+
+## Workflow state and memory
+
+`StateStore` is the owner-bound workflow-state boundary. The in-memory
+implementation is useful for local runs; `SQLiteStateStore` provides a durable
+schema-migrated store for one or more runtime instances using the same
+database. State rows are keyed by tenant, session, agent, and state identity.
+Reads and writes verify principal ownership, and writes may require the
+expected version so a stale worker fails closed.
+
+An approval pause stores an `ExecutionCheckpoint` in the state data. The
+checkpoint includes the trusted execution identity, exact remaining plan,
+reviewed action, prior typed evidence, and redacted trace. Resume hydration
+requires an explicit matching `PrincipalContext`; a provider is never allowed
+to replace checkpoint authority or the reviewed plan. State data is JSON and
+uses an explicit schema version and migration table. TTL and retention hooks
+are opt-in application controls, and state storage does not imply encryption,
+backup, or cross-process job leasing.
+
+Workflow state is not conversational memory. `MemoryStrategy` remains an
+optional, separately owned source and its selected items are labelled
+untrusted by `ContextCompiler`. Neither retrieved text nor memory can become
+policy, identity, or authority.
+
+## Agent and capability registries
+
+`CapabilityRegistry` stores exact capability versions and exposes read-only
+copies for lookup, version listing, metadata search, lifecycle changes,
+compatibility checks against active tools, and versioned snapshots.
+`AgentRegistry` stores exact agent versions and checks referenced capabilities,
+tools, policies, dependency lifecycle, risk ceilings, and tool dependencies
+before validation or activation. Both registries support activation,
+suspension, deprecation, and retirement. Exact versions are immutable;
+replacement means registering a new version.
+
+Registry queries return copies so callers cannot mutate registry state through
+the read API. Snapshots sort component records and dependency edges for
+deterministic planning and include exact agent-to-capability, agent-to-tool,
+agent-to-policy, capability-to-tool, and tool-to-tool dependency edges.
+Mutation and snapshot events use `RegistryAuditEvent` and an application-owned
+`RegistryAuditSink`; the snapshot revision and event history make registry
+state auditable.
 
 ## Tool runtime and registry
 
@@ -368,7 +418,11 @@ The following decisions are accepted for this baseline:
 - `adr/0005-bounded-execution-controls.md` - run timeout, cancellation, and
   retry budget controls; and
 - `adr/0006-human-approval-gates.md` - exact approval requests, pause, and
-  resume.
+  resume; and
+- `adr/0007-durable-state-and-resume.md` - owner-bound durable checkpoints,
+  optimistic concurrency, retention, and migrations; and
+- `adr/0008-versioned-agent-capability-registries.md` - immutable registry
+  records, compatibility checks, lifecycle, snapshots, and audit.
 
 Phase 0B establishes the decisions and skeleton. Phases 1 and 2 implement the
 core contracts, provider-neutral request/response boundary, deterministic fake,
@@ -376,7 +430,9 @@ optional OpenAI adapter, normalization, provider call policies, and provider
 metadata traces. Phases 3 and 4 implement the typed tool and governance
 boundaries. Phase 5 implements the bounded coordinator and run controls. Phase
 6 implements application-owned approval policy, exact-digest pause and resume,
-expiry, and review outcomes. Later phases implement durable workflow state,
-complete registries and factory behavior, delegation, background execution,
-cost controls, and production integrations.
+ expiry, and review outcomes. Phase 7 implements owner-bound durable workflow
+ state, checkpoint hydration, and retention/version hooks. Phase 8 implements
+ agent and capability discovery, lifecycle, compatibility validation, and
+ auditable deterministic snapshots. Later phases implement factory behavior,
+ delegation, background execution, cost controls, and production integrations.
 Those features must use this baseline.
