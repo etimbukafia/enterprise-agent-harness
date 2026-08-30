@@ -6,9 +6,70 @@ Build a reusable, provider-neutral enterprise agent runtime that can safely inst
 
 This project is intentionally independent of CX Autopilot or any other consuming product.
 
+The project does not start from zero. It deliberately extracts and generalizes proven runtime and governance patterns from `ai-assistant-harness`, while breaking its conversational and read-tool constraints. `ai-assistant-harness` remains intact as a separate project with its own purpose.
+
 ---
 
-## Phase 0: Architecture Baseline
+## Phase 0A: Assistant Harness Extraction and Generalization
+
+### Objective
+Audit `ai-assistant-harness`, identify which concepts are reusable, and port only the parts that belong in a general enterprise-agent runtime.
+
+This is a code and architecture fork, not a literal GitHub fork. The new repository keeps its own history and product identity.
+
+### Tasks
+- [ ] Audit every module in `ai-assistant-harness`.
+- [ ] Classify each module or abstraction as `reuse mostly unchanged`, `generalize`, `redesign`, or `do not carry forward`.
+- [ ] Create and maintain a migration matrix from assistant-harness modules to enterprise-harness destinations.
+- [ ] Extract the provider-neutral provider adapter pattern.
+- [ ] Extract and generalize `ToolDefinition` and typed tool-result contracts.
+- [ ] Extract the `PermissionBroker` pattern and preserve the rule that model output cannot grant authority.
+- [ ] Extract bounded execution-loop logic and remove assumptions that execution is only conversational.
+- [ ] Extract trusted versus untrusted context separation.
+- [ ] Extract audit-event and structured trace patterns.
+- [ ] Extract deterministic safety and prompt-injection handling where it generalizes.
+- [ ] Extract state/session patterns that remain useful outside conversational assistants.
+- [ ] Extract verification concepts that apply to general agent outcomes.
+- [ ] Extract provider conformance-test patterns.
+- [ ] Extract only the runtime-facing evaluation contracts needed for trace/replay interoperability.
+- [ ] Move full evaluation and improvement responsibility out of the harness boundary; keep only runtime conformance and export contracts.
+- [ ] Remove the assumption that agents primarily answer questions.
+- [ ] Remove the assumption that tools are read-only.
+- [ ] Replace assistant response-state concepts with general agent outcome concepts where needed.
+- [ ] Preserve provenance in architecture notes so reused concepts remain traceable to the original harness.
+- [ ] Add parity tests for any behavior intentionally ported from `ai-assistant-harness`.
+- [ ] Do not copy code that is specific to citation-heavy conversational assistants unless the concept remains useful in the broader runtime.
+
+### Initial migration matrix
+
+| `ai-assistant-harness` module | Enterprise Agent Harness destination | Action |
+| --- | --- | --- |
+| `providers.py` | `providers/` | Generalize |
+| `tools.py` | `tools/` | Generalize heavily for read/write/action tools |
+| `permission.py` | `governance/permissions.py` | Reuse and generalize |
+| `loops.py` | `runtime/execution.py` | Generalize beyond conversation turns |
+| `audit.py` | `observability/audit.py` | Reuse and generalize |
+| `rules.py` | `governance/safety.py` | Generalize |
+| `context.py` | `runtime/context.py` | Reuse trusted/untrusted context concepts |
+| `state.py` | `state/` | Generalize |
+| `memory.py` | `memory/` | Redesign as optional memory strategies |
+| `skills.py` | `capabilities/` | Evolve into capability contracts |
+| `verification.py` | `verification/` | Generalize beyond citations and response sections |
+| `recovery.py` | `runtime/outcomes.py` | Redesign around enterprise-agent outcomes |
+| `harness.py` | `runtime/` | Redesign around general enterprise execution |
+| `evaluation_contracts.py` | runtime trace/replay contracts | Reuse selectively |
+| `evals.py` | external evaluation system | Do not port full evaluation ownership |
+
+### Exit criteria
+- Every assistant-harness module has an explicit migration decision.
+- Ported behavior has parity tests.
+- The new project has no dependency on `ai-assistant-harness` at runtime.
+- The original `ai-assistant-harness` remains intact.
+- No conversational or read-only assumption survives unless it is intentional and documented.
+
+---
+
+## Phase 0B: Architecture Baseline
 
 ### Objective
 Define the system boundaries, invariants, and package structure before implementation.
@@ -408,17 +469,18 @@ Clearly separate what the library provides from what a production platform must 
 
 For the first useful release, complete:
 
-1. Phase 0: Architecture Baseline
-2. Phase 1: Core Contracts
-3. Phase 2: Provider Abstraction
-4. Phase 3: Tool Runtime
-5. Phase 4: Permission and Policy Engine
-6. Phase 5: Bounded Agent Runtime
-7. Phase 6: Human Approval Gates
-8. Phase 8: Registries
-9. Phase 9: Agent Factory
-10. Phase 12: Observability and Audit
-11. Phase 14: External Evaluation Contract
+1. Phase 0A: Assistant Harness Extraction and Generalization
+2. Phase 0B: Architecture Baseline
+3. Phase 1: Core Contracts
+4. Phase 2: Provider Abstraction
+5. Phase 3: Tool Runtime
+6. Phase 4: Permission and Policy Engine
+7. Phase 5: Bounded Agent Runtime
+8. Phase 6: Human Approval Gates
+9. Phase 8: Registries
+10. Phase 9: Agent Factory
+11. Phase 12: Observability and Audit
+12. Phase 14: External Evaluation Contract
 
 Then add durable execution, composition, background agents, and hardening.
 
@@ -426,6 +488,7 @@ Then add durable execution, composition, background agents, and hardening.
 
 A reasonable `v0.1` should prove the following:
 
+- Proven assistant-harness runtime/governance concepts have been deliberately ported or rejected with documented migration decisions.
 - A declarative agent can be instantiated by the factory.
 - The agent is resolved from the Agent, Capability, and Tool registries.
 - The runtime can execute bounded tool calls.
