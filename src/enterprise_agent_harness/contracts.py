@@ -100,6 +100,9 @@ class SafetyFlag(str, Enum):
     CONFLICTING_RESULT = "conflicting_result"
     LOW_CONFIDENCE = "low_confidence"
     VERIFICATION_FAILED = "verification_failed"
+    EXECUTION_TIMEOUT = "execution_timeout"
+    EXECUTION_CANCELLED = "execution_cancelled"
+    RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
 
 
 class ContextTrust(str, Enum):
@@ -295,6 +298,37 @@ class CompiledContext(ContractModel):
             f"[{block.block_type.value}|{block.trust.value}|{block.source}]\n{block.content}"
             for block in self.blocks
         )
+
+    @property
+    def trusted_blocks(self) -> tuple[ContextBlock, ...]:
+        """Return the trusted partition of the compiled context."""
+
+        return tuple(block for block in self.blocks if block.trust == ContextTrust.TRUSTED)
+
+    @property
+    def untrusted_blocks(self) -> tuple[ContextBlock, ...]:
+        """Return the untrusted partition of the compiled context."""
+
+        return tuple(block for block in self.blocks if block.trust == ContextTrust.UNTRUSTED)
+
+    def render_trusted(self) -> str:
+        """Render only trusted runtime and application blocks."""
+
+        return _render_context_blocks(self.trusted_blocks)
+
+    def render_untrusted(self) -> str:
+        """Render only caller, memory, and tool-output blocks."""
+
+        return _render_context_blocks(self.untrusted_blocks)
+
+
+def _render_context_blocks(blocks: tuple[ContextBlock, ...]) -> str:
+    """Render a context partition with its trust labels intact."""
+
+    return "\n\n".join(
+        f"[{block.block_type.value}|{block.trust.value}|{block.source}]\n{block.content}"
+        for block in blocks
+    )
 
 
 class CapabilityDefinition(ContractModel):
@@ -699,6 +733,8 @@ class RuntimeConfig(ContractModel):
     provider_timeout_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
     provider_max_attempts: int = Field(default=1, ge=1, le=10)
     provider_retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
+    execution_timeout_seconds: float | None = Field(default=60.0, gt=0.0, le=3600.0)
+    max_retries: int = Field(default=3, ge=0, le=100)
     environment: str = Field(default="development", min_length=1)
     max_risk_level: RiskLevel = RiskLevel.CRITICAL
 

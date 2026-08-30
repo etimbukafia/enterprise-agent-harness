@@ -1,6 +1,6 @@
 # Public API baseline
 
-Status: accepted baseline for Phase 4.
+Status: accepted baseline for Phase 5.
 
 This document defines the smallest API that later phases must preserve. The
 root package may re-export additional compatibility names during the 0.x
@@ -43,6 +43,7 @@ when the versioning rules in `architecture.md` allow it.
 | Import | Purpose |
 | --- | --- |
 | `enterprise_agent_harness.AgentRuntime` | Execute one bounded governed run. |
+| `enterprise_agent_harness.CancellationToken` | Request cooperative cancellation of a synchronous run. |
 | `enterprise_agent_harness.ContextCompiler` | Compile trust-labelled provider context. |
 | `enterprise_agent_harness.ProviderAdapter` | Provider-neutral proposal boundary. |
 | `enterprise_agent_harness.InterpretationRequest` / `InterpretationResponse` | Typed interpretation operation boundary. |
@@ -67,6 +68,17 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.EnvironmentConstraint` | Environment-specific tool and risk ceiling. |
 | `enterprise_agent_harness.ResourcePolicyHook` | Application hook for resource-level policy decisions. |
 | `enterprise_agent_harness.SafetyPolicy` | Deterministic safety decision boundary. |
+
+`AgentRuntime.execute` accepts `timeout_seconds` and a
+`cancellation_event`. The event can be a standard `threading.Event` or a
+`CancellationToken`. A run checks both controls before each provider call and
+tool step. Provider and tool waits also stop at the run deadline. Python cannot
+force-stop a synchronous handler that is already running, so application
+handlers must use their own cancellation and idempotency controls.
+
+`RuntimeConfig.execution_timeout_seconds` sets the default run timeout and
+`RuntimeConfig.max_retries` sets the shared retry budget. The budget counts
+retries across provider and tool calls. A value of zero disables retries.
 
 ## Error layer
 

@@ -22,9 +22,12 @@ from ..contracts import (
     ToolResult,
     ToolResultStatus,
 )
+from ..errors import ExecutionCancelledError, ExecutionTimeoutError
 from .definitions import ToolDefinition, ToolInvocationError
 
 ToolTraceCallback = Callable[[str, dict[str, str]], None]
+CancellationCheck = Callable[[], bool]
+RetryAdmission = Callable[[], bool]
 
 
 @dataclass(frozen=True)
@@ -175,8 +178,11 @@ class ToolRegistry:
         version: str | None = None,
         idempotency_key: str | None = None,
         trace_callback: ToolTraceCallback | None = None,
+        cancellation_check: CancellationCheck | None = None,
+        deadline: float | None = None,
+        retry_admission: RetryAdmission | None = None,
     ) -> ToolResult:
-        """Validate and execute one tool with timeout, retry, and idempotency.
+        """Validate and execute one tool with timeout, cancellation, retry, and idempotency.
 
         The callback receives event names and metadata only. It never receives
         raw arguments, idempotency keys, or tool output.
@@ -295,6 +301,9 @@ class ToolRegistry:
                 cache_key=cache_key,
                 argument_digest=argument_digest,
                 trace_callback=trace_callback,
+                cancellation_check=cancellation_check,
+                deadline=deadline,
+                retry_admission=retry_admission,
             )
 
     def execute(
@@ -306,6 +315,9 @@ class ToolRegistry:
         version: str | None = None,
         idempotency_key: str | None = None,
         trace_callback: ToolTraceCallback | None = None,
+        cancellation_check: CancellationCheck | None = None,
+        deadline: float | None = None,
+        retry_admission: RetryAdmission | None = None,
     ) -> ToolResult:
         """Alias for :meth:`invoke` for application-facing terminology."""
 
@@ -316,6 +328,9 @@ class ToolRegistry:
             version=version,
             idempotency_key=idempotency_key,
             trace_callback=trace_callback,
+            cancellation_check=cancellation_check,
+            deadline=deadline,
+            retry_admission=retry_admission,
         )
 
     @property
@@ -340,6 +355,9 @@ class ToolRegistry:
         cache_key: tuple[str, str, str, str, str] | None,
         argument_digest: str,
         trace_callback: ToolTraceCallback | None,
+        cancellation_check: CancellationCheck | None,
+        deadline: float | None,
+        retry_admission: RetryAdmission | None,
     ) -> ToolResult:
         started = time.perf_counter()
         attempts = 0
@@ -362,15 +380,30 @@ class ToolRegistry:
                 result = _run_with_timeout(
                     lambda: tool.invoke(context, arguments),
                     tool.timeout_seconds,
+                    cancellation_check=cancellation_check,
+                    deadline=deadline,
                 )
+            except (ExecutionCancelledError, ExecutionTimeoutError) as exc:
+                self._record_execution(
+                    context=context,
+                    tool=tool,
+                    status=ToolResultStatus.FAILED,
+                    attempts=attempts,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    idempotency_key_digest=_digest_key(cache_key),
+                    error_code=exc.code.value,
+                    trace_callback=trace_callback,
+                )
+                raise
             except ToolInvocationError as exc:
                 last_error = exc
-                if not self._should_retry(
+                retry_requested = self._should_retry(
                     tool=tool,
                     error=exc,
                     attempt=attempts,
                     retry_allowed_for_action=retry_allowed_for_action,
-                ):
+                )
+                if not retry_requested:
                     self._record_execution(
                         context=context,
                         tool=tool,
@@ -379,6 +412,23 @@ class ToolRegistry:
                             if exc.code == "invalid_arguments"
                             else ToolResultStatus.FAILED
                         ),
+                        attempts=attempts,
+                        latency_ms=(time.perf_counter() - started) * 1000.0,
+                        idempotency_key_digest=_digest_key(cache_key),
+                        error_code=exc.code,
+                        trace_callback=trace_callback,
+                    )
+                    raise
+                if not _admit_retry(
+                    retry_admission,
+                    trace_callback=trace_callback,
+                    tool=tool,
+                    attempt=attempts,
+                ):
+                    self._record_execution(
+                        context=context,
+                        tool=tool,
+                        status=ToolResultStatus.FAILED,
                         attempts=attempts,
                         latency_ms=(time.perf_counter() - started) * 1000.0,
                         idempotency_key_digest=_digest_key(cache_key),
@@ -395,20 +445,51 @@ class ToolRegistry:
                         "reason_code": exc.code,
                     },
                 )
-                _sleep(tool.retry_backoff)
+                _sleep(
+                    tool.retry_backoff,
+                    cancellation_check=cancellation_check,
+                    deadline=deadline,
+                )
                 continue
 
-            if result.status == ToolResultStatus.FAILED and self._should_retry_result(
-                tool=tool,
-                result=result,
-                attempt=attempts,
-                retry_allowed_for_action=retry_allowed_for_action,
-            ):
+            retry_requested = (
+                result.status == ToolResultStatus.FAILED
+                and self._should_retry_result(
+                    tool=tool,
+                    result=result,
+                    attempt=attempts,
+                    retry_allowed_for_action=retry_allowed_for_action,
+                )
+            )
+            if retry_requested:
                 last_error = ToolInvocationError(
                     f"tool {tool.tool_id} returned a retryable failure",
                     code=result.error_code or "tool_failed",
                     retryable=True,
                 )
+                if not _admit_retry(
+                    retry_admission,
+                    trace_callback=trace_callback,
+                    tool=tool,
+                    attempt=attempts,
+                ):
+                    result = _with_execution_metadata(
+                        result,
+                        attempts=attempts,
+                        retry_count=attempts - 1,
+                        timeout_seconds=tool.timeout_seconds,
+                    )
+                    self._record_execution(
+                        context=context,
+                        tool=tool,
+                        status=result.status,
+                        attempts=attempts,
+                        latency_ms=(time.perf_counter() - started) * 1000.0,
+                        idempotency_key_digest=_digest_key(cache_key),
+                        error_code=result.error_code,
+                        trace_callback=trace_callback,
+                    )
+                    return result
                 self._emit(
                     trace_callback,
                     "tool_retry_scheduled",
@@ -418,7 +499,11 @@ class ToolRegistry:
                         "reason_code": last_error.code,
                     },
                 )
-                _sleep(tool.retry_backoff)
+                _sleep(
+                    tool.retry_backoff,
+                    cancellation_check=cancellation_check,
+                    deadline=deadline,
+                )
                 continue
 
             result = _with_execution_metadata(
@@ -600,21 +685,64 @@ class ToolRegistry:
 def _run_with_timeout(
     call: Callable[[], ToolResult],
     timeout_seconds: float | None,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    deadline: float | None = None,
 ) -> ToolResult:
-    if timeout_seconds is None:
+    if timeout_seconds is None and cancellation_check is None and deadline is None:
         return call()
 
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(call)
+    local_deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     try:
-        return future.result(timeout=timeout_seconds)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise ToolInvocationError(
-            "tool execution timed out",
-            code="tool_timeout",
-            retryable=True,
-        ) from exc
+        while True:
+            if cancellation_check is not None and cancellation_check():
+                future.cancel()
+                raise ExecutionCancelledError()
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                future.cancel()
+                raise ExecutionTimeoutError()
+            if local_deadline is not None and now >= local_deadline:
+                future.cancel()
+                raise ToolInvocationError(
+                    "tool execution timed out",
+                    code="tool_timeout",
+                    retryable=True,
+                )
+
+            wait_for = _wait_seconds(
+                now=now,
+                local_deadline=local_deadline,
+                deadline=deadline,
+                poll=cancellation_check is not None,
+            )
+            try:
+                result = future.result(timeout=wait_for)
+                if cancellation_check is not None and cancellation_check():
+                    raise ExecutionCancelledError()
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    raise ExecutionTimeoutError()
+                if local_deadline is not None and now >= local_deadline:
+                    raise ToolInvocationError(
+                        "tool execution timed out",
+                        code="tool_timeout",
+                        retryable=True,
+                    )
+                return result
+            except FutureTimeoutError as exc:
+                if deadline is not None and time.monotonic() >= deadline:
+                    future.cancel()
+                    raise ExecutionTimeoutError() from exc
+                if local_deadline is not None and time.monotonic() >= local_deadline:
+                    future.cancel()
+                    raise ToolInvocationError(
+                        "tool execution timed out",
+                        code="tool_timeout",
+                        retryable=True,
+                    ) from exc
     finally:
         # A running handler cannot be force-stopped. Do not block the runtime
         # after the timeout has been reported.
@@ -644,9 +772,56 @@ def _digest_key(cache_key: tuple[str, str, str, str, str] | None) -> str | None:
     return hashlib.sha256(cache_key[4].encode("utf-8")).hexdigest()
 
 
-def _sleep(seconds: float) -> None:
-    if seconds > 0:
-        time.sleep(seconds)
+def _sleep(
+    seconds: float,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    deadline: float | None = None,
+) -> None:
+    if seconds <= 0 and cancellation_check is None and deadline is None:
+        return
+    end = time.monotonic() + max(0.0, seconds)
+    while True:
+        if cancellation_check is not None and cancellation_check():
+            raise ExecutionCancelledError()
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            raise ExecutionTimeoutError()
+        remaining = end - now
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.05))
+
+
+def _wait_seconds(
+    *,
+    now: float,
+    local_deadline: float | None,
+    deadline: float | None,
+    poll: bool,
+) -> float | None:
+    limits = [value - now for value in (local_deadline, deadline) if value is not None]
+    if not limits:
+        return 0.05 if poll else None
+    remaining = max(0.0, min(limits))
+    return min(remaining, 0.05) if poll else remaining
+
+
+def _admit_retry(
+    retry_admission: RetryAdmission | None,
+    *,
+    trace_callback: ToolTraceCallback | None,
+    tool: ToolDefinition,
+    attempt: int,
+) -> bool:
+    if retry_admission is None or retry_admission():
+        return True
+    ToolRegistry._emit(
+        trace_callback,
+        "retry_budget_exhausted",
+        {"tool_id": tool.tool_id, "attempt": str(attempt)},
+    )
+    return False
 
 
 def _metadata_int(metadata: dict[str, str], key: str, *, default: int = 0) -> int:
@@ -657,4 +832,4 @@ def _metadata_int(metadata: dict[str, str], key: str, *, default: int = 0) -> in
     return max(0, value)
 
 
-__all__ = ["ToolRegistry", "ToolTraceCallback"]
+__all__ = ["CancellationCheck", "RetryAdmission", "ToolRegistry", "ToolTraceCallback"]

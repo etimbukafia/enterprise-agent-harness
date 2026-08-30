@@ -105,6 +105,7 @@ from .providers import (
     run_conformance_probe,
 )
 from .runtime.context import ContextCompiler
+from .runtime.control import CancellationToken
 from .runtime.execution import AgentRuntime
 from .state.store import InMemoryStateStore, StateConflictError, StateOwnershipError, StateStore
 from .tools.definitions import ToolDefinition, ToolInvocationError, ToolRetryPolicy
@@ -126,6 +127,7 @@ __all__ = [
     "AuditLogger",
     "AuditSink",
     "BoundedMemory",
+    "CancellationToken",
     "CapabilityDefinition",
     "CompiledContext",
     "CompositionRequest",

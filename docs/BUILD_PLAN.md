@@ -221,26 +221,30 @@ Make deterministic governance the authority over proposed agent actions.
 
 ## Phase 5: Bounded Agent Execution Runtime
 
+Status: complete. Evidence: `runtime/execution.py`,
+`runtime/control.py`, `tests/test_phase_5_runtime.py`, and the quality
+workflow.
+
 ### Objective
 Run a single enterprise agent safely through a bounded plan-and-act loop.
 
 ### Tasks
-- [ ] Implement the main `AgentRuntime` coordinator.
-- [ ] Compile trusted and untrusted context separately.
-- [ ] Add bounded step count.
-- [ ] Add execution timeout and cancellation.
-- [ ] Add tool-call validation and authorization before invocation.
-- [ ] Add explicit stop conditions.
-- [ ] Add retry budget controls.
-- [ ] Add deterministic terminal states.
-- [ ] Add structured execution traces.
-- [ ] Add safe handling for partial tool failure.
-- [ ] Add replayable deterministic test scenarios.
+- [x] Implement the main `AgentRuntime` coordinator.
+- [x] Compile trusted and untrusted context separately.
+- [x] Add bounded step count.
+- [x] Add execution timeout and cancellation.
+- [x] Add tool-call validation and authorization before invocation.
+- [x] Add explicit stop conditions.
+- [x] Add retry budget controls.
+- [x] Add deterministic terminal states.
+- [x] Add structured execution traces.
+- [x] Add safe handling for partial tool failure.
+- [x] Add replayable deterministic test scenarios.
 
 ### Exit criteria
-- A single agent can complete a read/write workflow with policy enforcement.
-- Infinite loops are prevented.
-- Every run has a complete trace and terminal state.
+- [x] A single agent can complete a read/write workflow with policy enforcement.
+- [x] Infinite loops are prevented.
+- [x] Every run has a complete trace and terminal state.
 
 ---
 

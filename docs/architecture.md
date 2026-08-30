@@ -140,6 +140,13 @@ The runtime stops at the first unsafe or invalid boundary unless the agent
 contract explicitly permits a bounded partial result. A denied, unapproved,
 invalid, or over-budget call does not reach its handler.
 
+Phase 5 applies one execution deadline and one retry budget across provider and
+tool work. The runtime checks the deadline and caller cancellation before each
+provider call and tool step. It records a terminal timeout or cancellation
+outcome when a control stops the run. A plan cannot exceed
+`RuntimeConfig.max_plan_steps`. An empty plan is a deterministic
+`needs_input` outcome.
+
 ### Execution modes
 
 | Mode | Contract and control |
@@ -151,7 +158,7 @@ invalid, or over-budget call does not reach its handler.
 
 Approval is a gate on one exact action. A provider cannot change the action
 after approval. Full pause, resume, expiry, and approval-broker behavior is
-defined in Phase 6; the Phase 0A boundary already denies an unapproved action.
+defined in Phase 6; the current runtime already denies an unapproved action.
 
 ## Tool runtime and registry
 
@@ -206,6 +213,19 @@ Each evaluation returns a `PolicyDecision`. The runtime stores that record in
 audit event. Resource hooks receive application facts and proposed arguments;
 their data is not authority and their result cannot expand the execution
 context.
+
+## Bounded execution controls
+
+`AgentRuntime` records context partition counts, plan steps, tool results,
+retry decisions, control interruptions, terminal state, and the final outcome.
+The exported trace keeps event order and does not include raw input, provider
+prompts, or tool output.
+
+`CancellationToken` and a standard `threading.Event` provide cooperative
+cancellation. A synchronous provider or handler that is already running may
+continue in its worker after the runtime stops waiting. Application handlers
+must use remote timeouts, cancellation-aware clients, and idempotency for
+side-effecting work.
 
 ## Provider boundary
 
@@ -332,11 +352,15 @@ The following decisions are accepted for this baseline:
 - `adr/0001-provider-neutral-adapter.md` - provider boundary;
 - `adr/0002-application-policy-ownership.md` - policy and authority;
 - `adr/0003-separate-versioned-registries.md` - registry design; and
-- `adr/0004-versioned-trace-contracts.md` - trace and replay contracts.
+- `adr/0004-versioned-trace-contracts.md` - trace and replay contracts; and
+- `adr/0005-bounded-execution-controls.md` - run timeout, cancellation, and
+  retry budget controls.
 
 Phase 0B establishes the decisions and skeleton. Phases 1 and 2 implement the
 core contracts, provider-neutral request/response boundary, deterministic fake,
 optional OpenAI adapter, normalization, provider call policies, and provider
-metadata traces. Later phases implement durable approval, complete registries
-and factory behavior, delegation, background execution, cost controls, and
-production integrations. Those features must use this baseline.
+metadata traces. Phases 3 and 4 implement the typed tool and governance
+boundaries. Phase 5 implements the bounded coordinator and run controls. Later
+phases implement durable approval, complete registries and factory behavior,
+delegation, background execution, cost controls, and production integrations.
+Those features must use this baseline.

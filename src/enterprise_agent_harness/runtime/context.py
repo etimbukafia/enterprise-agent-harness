@@ -51,7 +51,7 @@ class ContextCompiler:
         if not text:
             raise ValueError("input_text must not be empty")
 
-        blocks = [
+        trusted_blocks = [
             self._block(
                 block_id="policy",
                 block_type=ContextBlockType.POLICY,
@@ -86,7 +86,7 @@ class ContextCompiler:
         ]
         capability_values = list(capabilities)
         if capability_values:
-            blocks.append(
+            trusted_blocks.append(
                 self._block(
                     block_id="capabilities",
                     block_type=ContextBlockType.CAPABILITY,
@@ -101,7 +101,7 @@ class ContextCompiler:
                 )
             )
         if state is not None:
-            blocks.append(
+            trusted_blocks.append(
                 self._block(
                     block_id="state",
                     block_type=ContextBlockType.STATE,
@@ -119,8 +119,9 @@ class ContextCompiler:
             for item in memory
             if item.principal_id == principal.principal_id and item.tenant_id == principal.tenant_id
         ]
+        untrusted_blocks: list[ContextBlock] = []
         if memory_values:
-            blocks.append(
+            untrusted_blocks.append(
                 self._block(
                     block_id="memory",
                     block_type=ContextBlockType.MEMORY,
@@ -130,7 +131,7 @@ class ContextCompiler:
                     priority=45,
                 )
             )
-        blocks.append(
+        untrusted_blocks.append(
             self._block(
                 block_id="input",
                 block_type=ContextBlockType.INPUT,
@@ -146,7 +147,7 @@ class ContextCompiler:
             if result.execution_id in {None, execution.execution_id}
         ]
         for index, result in enumerate(scoped_results, start=1):
-            blocks.append(
+            untrusted_blocks.append(
                 self._block(
                     block_id=f"tool_output_{index}",
                     block_type=ContextBlockType.TOOL_OUTPUT,
@@ -157,6 +158,7 @@ class ContextCompiler:
                 )
             )
 
+        blocks = [*trusted_blocks, *untrusted_blocks]
         selected, dropped = self._apply_budget(blocks)
         return CompiledContext(
             execution_id=execution.execution_id,

@@ -9,7 +9,12 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..errors import ProviderError, ProviderTimeoutError
+from ..errors import (
+    ExecutionCancelledError,
+    ExecutionTimeoutError,
+    ProviderError,
+    ProviderTimeoutError,
+)
 from .contracts import ProviderOperation
 
 
@@ -110,8 +115,10 @@ def invoke_provider_call(
     call: Callable[[], object],
     policy: ProviderCallPolicy,
     sleep: Callable[[float], None] = time.sleep,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> ProviderInvocationResult:
-    """Run one provider call with the configured timeout and retry hooks."""
+    """Run one provider call with timeout, cancellation, and retry hooks."""
 
     max_attempts = policy.max_attempts(operation)
     if max_attempts < 1:
@@ -121,19 +128,31 @@ def invoke_provider_call(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            value = _run_with_timeout(call, policy.timeout_seconds(operation))
+            value = _run_with_timeout(
+                call,
+                policy.timeout_seconds(operation),
+                cancellation_check=cancellation_check,
+                deadline=deadline,
+            )
             return ProviderInvocationResult(
                 value=value,
                 attempts=attempt,
                 latency_ms=(time.perf_counter() - started) * 1000.0,
             )
+        except (ExecutionCancelledError, ExecutionTimeoutError):
+            raise
         except Exception as exc:  # noqa: BLE001 - provider code is an extension boundary.
             last_error = exc
             if not policy.should_retry(operation=operation, error=exc, attempt=attempt):
                 break
             delay = policy.backoff_seconds(operation=operation, error=exc, attempt=attempt)
             if delay > 0:
-                sleep(delay)
+                _sleep_with_control(
+                    delay,
+                    sleep=sleep,
+                    cancellation_check=cancellation_check,
+                    deadline=deadline,
+                )
 
     assert last_error is not None
     if isinstance(last_error, ProviderError):
@@ -144,21 +163,107 @@ def invoke_provider_call(
     ) from last_error
 
 
-def _run_with_timeout(call: Callable[[], object], timeout_seconds: float | None) -> object:
-    if timeout_seconds is None:
+def _run_with_timeout(
+    call: Callable[[], object],
+    timeout_seconds: float | None,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline: float | None = None,
+) -> object:
+    if timeout_seconds is None and cancellation_check is None and deadline is None:
         return call()
 
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(call)
+    local_deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     try:
-        return future.result(timeout=timeout_seconds)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise ProviderTimeoutError() from exc
+        while True:
+            if cancellation_check is not None and cancellation_check():
+                future.cancel()
+                raise ExecutionCancelledError()
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                future.cancel()
+                raise ExecutionTimeoutError()
+            if local_deadline is not None and now >= local_deadline:
+                future.cancel()
+                raise ProviderTimeoutError()
+
+            wait_for = _wait_seconds(
+                now=now,
+                local_deadline=local_deadline,
+                deadline=deadline,
+                poll=cancellation_check is not None,
+            )
+            try:
+                value = future.result(timeout=wait_for)
+                if cancellation_check is not None and cancellation_check():
+                    raise ExecutionCancelledError()
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    raise ExecutionTimeoutError()
+                if local_deadline is not None and now >= local_deadline:
+                    raise ProviderTimeoutError()
+                return value
+            except FutureTimeoutError as exc:
+                now = time.monotonic()
+                if (
+                    deadline is not None
+                    and (local_deadline is None or deadline <= local_deadline)
+                    and now >= deadline
+                ):
+                    future.cancel()
+                    raise ExecutionTimeoutError() from exc
+                if local_deadline is not None and now >= local_deadline:
+                    future.cancel()
+                    raise ProviderTimeoutError() from exc
+                if deadline is not None and now >= deadline:
+                    future.cancel()
+                    raise ExecutionTimeoutError() from exc
     finally:
         # A running provider call cannot be force-stopped. Do not block the
-        # runtime on shutdown after the timeout has already been reported.
+        # runtime after the timeout or cancellation has been reported.
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _wait_seconds(
+    *,
+    now: float,
+    local_deadline: float | None,
+    deadline: float | None,
+    poll: bool,
+) -> float | None:
+    limits = [value - now for value in (local_deadline, deadline) if value is not None]
+    if not limits:
+        return 0.05 if poll else None
+    remaining = max(0.0, min(limits))
+    return min(remaining, 0.05) if poll else remaining
+
+
+def _sleep_with_control(
+    seconds: float,
+    *,
+    sleep: Callable[[float], None],
+    cancellation_check: Callable[[], bool] | None,
+    deadline: float | None,
+) -> None:
+    """Sleep between retries without ignoring a run control."""
+
+    if cancellation_check is None and deadline is None:
+        sleep(seconds)
+        return
+
+    end = time.monotonic() + seconds
+    while True:
+        if cancellation_check is not None and cancellation_check():
+            raise ExecutionCancelledError()
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            raise ExecutionTimeoutError()
+        remaining = end - now
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.05))
 
 
 __all__ = [

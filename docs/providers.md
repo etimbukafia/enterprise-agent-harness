@@ -59,10 +59,12 @@ and API credentials.
 
 ## Timeout, retry, and trace metadata
 
-`RuntimeConfig` supplies finite provider timeout, maximum attempts, and retry
-backoff defaults. Pass a `ProviderCallPolicy` when the application needs
-operation-specific behavior. The default policy allows one attempt and
-reports retryable provider timeouts and transient connection failures.
+`RuntimeConfig` supplies finite provider timeout, maximum attempts, retry
+backoff, and the run-level retry budget. Pass a `ProviderCallPolicy` when the
+application needs operation-specific behavior. The default policy allows one
+attempt and reports retryable provider timeouts and transient connection
+failures. `AgentRuntime` still applies its shared `max_retries` budget to any
+provider policy.
 
 Each successful provider call adds a `ProviderCallRecord` to
 `RunTrace.provider_calls`. The record contains provider ID, provider version,
