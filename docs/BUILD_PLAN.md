@@ -6,21 +6,26 @@ Build a reusable, provider-neutral enterprise agent runtime that can safely inst
 
 This project is intentionally independent of CX Autopilot or any other consuming product.
 
-The project does not start from zero. It deliberately extracts and generalizes proven runtime and governance patterns from `ai-assistant-harness`, while breaking its conversational and read-tool constraints. `ai-assistant-harness` remains intact as a separate project with its own purpose.
+The project does not start from zero. It deliberately extracts and generalizes proven runtime and governance patterns from the source repository:
+
+**Source repository:** https://github.com/etimbukafia/ai-assistant-harness
+
+The source repository remains intact as a separate project. This project keeps its own history and product identity.
 
 ---
 
-## Phase 0A: Assistant Harness Extraction and Generalization
+## Phase 0A: Source Harness Extraction and Generalization
 
 ### Objective
-Audit `ai-assistant-harness`, identify which concepts are reusable, and port only the parts that belong in a general enterprise-agent runtime.
+Inspect https://github.com/etimbukafia/ai-assistant-harness, identify which concepts are reusable, and port only the parts that belong in a general enterprise-agent runtime.
 
-This is a code and architecture fork, not a literal GitHub fork. The new repository keeps its own history and product identity.
+This is a code and architecture fork. It is not a literal GitHub fork.
 
 ### Tasks
-- [ ] Audit every module in `ai-assistant-harness`.
+- [ ] Fetch and inspect https://github.com/etimbukafia/ai-assistant-harness before implementation starts.
+- [ ] Audit every source module in that repository.
 - [ ] Classify each module or abstraction as `reuse mostly unchanged`, `generalize`, `redesign`, or `do not carry forward`.
-- [ ] Create and maintain a migration matrix from assistant-harness modules to enterprise-harness destinations.
+- [ ] Create and maintain a migration matrix from source modules to enterprise-harness destinations.
 - [ ] Extract the provider-neutral provider adapter pattern.
 - [ ] Extract and generalize `ToolDefinition` and typed tool-result contracts.
 - [ ] Extract the `PermissionBroker` pattern and preserve the rule that model output cannot grant authority.
@@ -32,17 +37,17 @@ This is a code and architecture fork, not a literal GitHub fork. The new reposit
 - [ ] Extract verification concepts that apply to general agent outcomes.
 - [ ] Extract provider conformance-test patterns.
 - [ ] Extract only the runtime-facing evaluation contracts needed for trace/replay interoperability.
-- [ ] Move full evaluation and improvement responsibility out of the harness boundary; keep only runtime conformance and export contracts.
+- [ ] Move full evaluation and improvement responsibility out of the harness boundary. Keep only runtime conformance and export contracts.
 - [ ] Remove the assumption that agents primarily answer questions.
 - [ ] Remove the assumption that tools are read-only.
 - [ ] Replace assistant response-state concepts with general agent outcome concepts where needed.
-- [ ] Preserve provenance in architecture notes so reused concepts remain traceable to the original harness.
-- [ ] Add parity tests for any behavior intentionally ported from `ai-assistant-harness`.
+- [ ] Preserve provenance in architecture notes so reused concepts remain traceable to the source repository.
+- [ ] Add parity tests for any behavior intentionally ported from the source repository.
 - [ ] Do not copy code that is specific to citation-heavy conversational assistants unless the concept remains useful in the broader runtime.
 
 ### Initial migration matrix
 
-| `ai-assistant-harness` module | Enterprise Agent Harness destination | Action |
+| Source module | Enterprise Agent Harness destination | Action |
 | --- | --- | --- |
 | `providers.py` | `providers/` | Generalize |
 | `tools.py` | `tools/` | Generalize heavily for read/write/action tools |
@@ -61,10 +66,10 @@ This is a code and architecture fork, not a literal GitHub fork. The new reposit
 | `evals.py` | external evaluation system | Do not port full evaluation ownership |
 
 ### Exit criteria
-- Every assistant-harness module has an explicit migration decision.
+- Every source module has an explicit migration decision.
 - Ported behavior has parity tests.
-- The new project has no dependency on `ai-assistant-harness` at runtime.
-- The original `ai-assistant-harness` remains intact.
+- The new project has no runtime dependency on the source repository.
+- https://github.com/etimbukafia/ai-assistant-harness remains intact.
 - No conversational or read-only assumption survives unless it is intentional and documented.
 
 ---
@@ -469,7 +474,7 @@ Clearly separate what the library provides from what a production platform must 
 
 For the first useful release, complete:
 
-1. Phase 0A: Assistant Harness Extraction and Generalization
+1. Phase 0A: Source Harness Extraction and Generalization
 2. Phase 0B: Architecture Baseline
 3. Phase 1: Core Contracts
 4. Phase 2: Provider Abstraction
@@ -488,7 +493,7 @@ Then add durable execution, composition, background agents, and hardening.
 
 A reasonable `v0.1` should prove the following:
 
-- Proven assistant-harness runtime/governance concepts have been deliberately ported or rejected with documented migration decisions.
+- Proven source-runtime and governance concepts have been deliberately ported or rejected with documented migration decisions.
 - A declarative agent can be instantiated by the factory.
 - The agent is resolved from the Agent, Capability, and Tool registries.
 - The runtime can execute bounded tool calls.
