@@ -329,46 +329,53 @@ Make agents and their capabilities discoverable and reusable.
 
 ## Phase 9: Agent Factory
 
+Status: complete. Evidence: `factory.py`, the declarative factory contracts in
+`contracts.py`, and public-boundary tests in `tests/test_phase_9_factory.py`.
+
 ### Objective
 Instantiate agents from reusable, approved pieces instead of writing new code for each agent.
 
 ### Tasks
-- [ ] Define declarative agent configuration format.
-- [ ] Build factory validation pipeline.
-- [ ] Resolve referenced tools, policies, provider, memory strategy, and runtime options.
-- [ ] Reject missing or incompatible dependencies.
-- [ ] Support reusable runtime profiles.
-- [ ] Support templates for common patterns: read-only analyst, action agent, approval-gated operator, router.
-- [ ] Generate immutable resolved manifests.
-- [ ] Register built agents into the Agent Registry.
-- [ ] Add dry-run mode.
-- [ ] Add factory conformance tests.
+- [x] Define declarative agent configuration format.
+- [x] Build factory validation pipeline.
+- [x] Resolve referenced tools, policies, provider, memory strategy, and runtime options.
+- [x] Reject missing or incompatible dependencies.
+- [x] Support reusable runtime profiles.
+- [x] Support templates for common patterns: read-only analyst, action agent, approval-gated operator, router.
+- [x] Generate immutable resolved manifests.
+- [x] Register built agents into the Agent Registry.
+- [x] Add dry-run mode.
+- [x] Add factory conformance tests.
 
 ### Exit criteria
-- A new agent can be created by configuration plus registered components.
-- No arbitrary code generation is required for standard agents.
+- [x] A new agent can be created by configuration plus registered components.
+- [x] No arbitrary code generation is required for standard agents.
 
 ---
 
 ## Phase 10: Composition and Delegation
 
+Status: complete. Evidence: `composition.py`, delegation and correlation
+contracts in `contracts.py`, runtime trace/audit propagation, and public-boundary
+tests in `tests/test_phase_10_composition.py`.
+
 ### Objective
 Allow multiple agents and capabilities to cooperate without unrestricted peer authority.
 
 ### Tasks
-- [ ] Define delegation contracts.
-- [ ] Define parent-child execution context propagation.
-- [ ] Enforce delegated permission ceilings.
-- [ ] Add agent-to-agent invocation through the runtime, never direct bypass.
-- [ ] Add composition patterns: router, supervisor, specialist delegation, sequential workflow.
-- [ ] Add maximum delegation depth.
-- [ ] Add cycle detection.
-- [ ] Add shared trace correlation IDs.
-- [ ] Add tests for permission amplification attempts.
+- [x] Define delegation contracts.
+- [x] Define parent-child execution context propagation.
+- [x] Enforce delegated permission ceilings.
+- [x] Add agent-to-agent invocation through the runtime, never direct bypass.
+- [x] Add composition patterns: router, supervisor, specialist delegation, sequential workflow.
+- [x] Add maximum delegation depth.
+- [x] Add cycle detection.
+- [x] Add shared trace correlation IDs.
+- [x] Add tests for permission amplification attempts.
 
 ### Exit criteria
-- One agent can delegate to another safely.
-- Delegation cannot increase authority beyond the parent execution context.
+- [x] One agent can delegate to another safely.
+- [x] Delegation cannot increase authority beyond the parent execution context.
 
 ---
 

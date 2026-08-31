@@ -607,6 +607,33 @@ class AgentRegistry:
             if agent.agent_id == agent_id
         )
 
+    def check_compatibility(
+        self,
+        agent: AgentDefinition,
+        *,
+        require_active_dependencies: bool = True,
+    ) -> None:
+        """Check an unregistered agent against the exact registry dependencies.
+
+        Factory validation needs the same public-boundary checks as registration,
+        but must be able to run them before mutating this registry.
+        """
+
+        candidate = agent.model_copy(deep=True)
+        required_statuses = (
+            {AgentLifecycleStatus.ACTIVE}
+            if require_active_dependencies
+            else {
+                AgentLifecycleStatus.VALIDATED,
+                AgentLifecycleStatus.ACTIVE,
+            }
+        )
+        with self._lock:
+            self._validate_agent(
+                candidate,
+                required_dependency_statuses=required_statuses,
+            )
+
     def search(
         self,
         query: str | None = None,

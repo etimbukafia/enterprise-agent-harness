@@ -39,8 +39,9 @@ reference.
    `ListRegistryAuditSink` is for local use and tests. Registry snapshots are
    deterministic in record and edge ordering, while their generated identity
    and timestamp remain evidence fields.
-7. The registry layer does not instantiate providers or handlers. Agent factory
-   assembly remains a later phase and must consume exact registry results.
+7. The registry layer does not instantiate providers or handlers. The agent
+   factory consumes exact registry results and remains the separate assembly
+   boundary.
 
 ## Consequences
 

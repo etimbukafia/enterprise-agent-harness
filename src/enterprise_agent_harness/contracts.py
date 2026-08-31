@@ -176,6 +176,24 @@ class AgentLifecycleStatus(str, Enum):
     RETIRED = "retired"
 
 
+class AgentTemplate(str, Enum):
+    """Supported declarative patterns for standard agent construction."""
+
+    READ_ONLY_ANALYST = "read_only_analyst"
+    ACTION_AGENT = "action_agent"
+    APPROVAL_GATED_OPERATOR = "approval_gated_operator"
+    ROUTER = "router"
+
+
+class CompositionPattern(str, Enum):
+    """Safe patterns for invoking multiple registered agents."""
+
+    ROUTER = "router"
+    SUPERVISOR = "supervisor"
+    SPECIALIST = "specialist"
+    SEQUENTIAL = "sequential"
+
+
 class PolicyEffect(str, Enum):
     """Effect of one declarative policy rule."""
 
@@ -203,21 +221,37 @@ class ExecutionContext(ContractModel):
     agent_version: str = Field(min_length=1)
     principal: PrincipalContext
     authorized_tool_ids: tuple[str, ...] = ()
+    authorized_tool_versions: tuple[str, ...] = ()
     granted_permissions: tuple[str, ...] = ()
     approved_action_digests: tuple[str, ...] = ()
     max_steps: int = Field(default=3, ge=1, le=100)
     state_id: str = Field(min_length=1)
     environment: str = Field(default="development", min_length=1)
     max_risk_level: RiskLevel = RiskLevel.CRITICAL
+    correlation_id: str = Field(default="root", min_length=1)
+    parent_execution_id: str | None = Field(default=None, min_length=1)
+    delegation_id: str | None = Field(default=None, min_length=1)
+    delegation_depth: int = Field(default=0, ge=0, le=100)
+    delegation_path: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def authority_lists_are_unique(self) -> Self:
         if len(self.authorized_tool_ids) != len(set(self.authorized_tool_ids)):
             raise ValueError("authorized_tool_ids must not contain duplicates")
+        if any(not reference.strip() for reference in self.authorized_tool_versions):
+            raise ValueError("authorized_tool_versions must not contain empty values")
+        if len(self.authorized_tool_versions) != len(set(self.authorized_tool_versions)):
+            raise ValueError("authorized_tool_versions must not contain duplicates")
         if len(self.granted_permissions) != len(set(self.granted_permissions)):
             raise ValueError("granted_permissions must not contain duplicates")
         if len(self.approved_action_digests) != len(set(self.approved_action_digests)):
             raise ValueError("approved_action_digests must not contain duplicates")
+        if self.parent_execution_id is None and self.delegation_depth != 0:
+            raise ValueError("root execution cannot have a delegation depth")
+        if self.parent_execution_id is not None and self.delegation_depth < 1:
+            raise ValueError("delegated execution must have a positive delegation depth")
+        if len(self.delegation_path) != len(set(self.delegation_path)):
+            raise ValueError("delegation_path must not contain duplicates")
         return self
 
 
@@ -1037,6 +1071,85 @@ class AgentDefinition(ContractModel):
         return self.identity.version
 
 
+class AgentConfig(ContractModel):
+    """Declarative input for the agent factory."""
+
+    schema_version: Literal["agent-config.v1"] = "agent-config.v1"
+    identity: AgentVersion
+    goal: str = Field(min_length=1)
+    supported_intents: list[str] = Field(default_factory=list)
+    supported_languages: list[str] = Field(default_factory=list)
+    capabilities: list[VersionReference] = Field(default_factory=list)
+    allowed_tools: list[VersionReference] = Field(default_factory=list)
+    policies: list[VersionReference] = Field(default_factory=list)
+    provider_profile: ProviderProfile
+    runtime_profile: VersionReference | None = None
+    runtime_limits: RuntimeConfig | None = None
+    risk_level: RiskLevel = RiskLevel.LOW
+    approval_requirements: list[str] = Field(default_factory=list)
+    state_strategy: str | None = Field(default=None, min_length=1)
+    memory_strategy: str | None = Field(default=None, min_length=1)
+    owner_id: str = Field(default="application", min_length=1)
+    template: AgentTemplate | None = None
+    performance_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_flat_identity_input(cls, value: object) -> object:
+        """Accept flat identity fields while storing one nested identity."""
+
+        if not isinstance(value, Mapping) or "identity" in value:
+            return value
+        has_agent_id = "agent_id" in value
+        has_version = "version" in value
+        if not has_agent_id and not has_version:
+            return value
+        if not has_agent_id or not has_version:
+            raise ValueError("agent_id and version must be provided together")
+        normalized = dict(value)
+        normalized["identity"] = {
+            "agent_id": normalized.pop("agent_id"),
+            "version": normalized.pop("version"),
+        }
+        return normalized
+
+    @model_validator(mode="after")
+    def references_are_unique(self) -> Self:
+        for name in (
+            "supported_intents",
+            "supported_languages",
+            "capabilities",
+            "allowed_tools",
+            "policies",
+            "approval_requirements",
+        ):
+            values = getattr(self, name)
+            if name in {"supported_intents", "supported_languages", "approval_requirements"}:
+                keys = values
+            else:
+                keys = [(item.component_id, item.version) for item in values]
+            if len(keys) != len(set(keys)):
+                raise ValueError(f"{name} must not contain duplicates")
+        return self
+
+
+class RuntimeProfile(ContractModel):
+    """Reusable versioned runtime-limit profile for factory builds."""
+
+    schema_version: Literal["agent-runtime-profile.v1"] = "agent-runtime-profile.v1"
+    profile_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+    version: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    runtime_limits: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    owner_id: str = Field(default="application", min_length=1)
+    lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.ACTIVE
+
+    @field_validator("version")
+    @classmethod
+    def version_is_pep440_component_version(cls, value: str) -> str:
+        return _validate_component_version(value)
+
+
 class RegistryDependency(ContractModel):
     """One exact dependency edge in a registry snapshot."""
 
@@ -1067,4 +1180,161 @@ class RegistrySnapshot(ContractModel):
     def timestamp_is_aware(self) -> Self:
         if self.generated_at.tzinfo is None or self.generated_at.utcoffset() is None:
             raise ValueError("generated_at must include timezone information")
+        return self
+
+
+class ResolvedAgentManifest(ContractModel):
+    """Top-level immutable factory snapshot of one approved agent build."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["agent-resolved-manifest.v1"] = "agent-resolved-manifest.v1"
+    manifest_id: str = Field(min_length=1)
+    manifest_digest: str = Field(min_length=1)
+    source: AgentConfig
+    agent: AgentDefinition
+    capabilities: tuple[CapabilityDefinition, ...] = ()
+    tools: tuple[ToolDescriptor, ...] = ()
+    policies: tuple[PolicyDefinition, ...] = ()
+    provider_profile: ProviderProfile
+    runtime_profile: RuntimeProfile | None = None
+    runtime_limits: RuntimeConfig
+    state_strategy: str | None = None
+    memory_strategy: str | None = None
+    template: AgentTemplate | None = None
+    resolved_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def timestamp_is_aware(self) -> Self:
+        if self.resolved_at.tzinfo is None or self.resolved_at.utcoffset() is None:
+            raise ValueError("resolved_at must include timezone information")
+        return self
+
+
+class DelegationRequest(ContractModel):
+    """Parent-authorized request to invoke one exact child agent version."""
+
+    schema_version: Literal["agent-delegation-request.v1"] = "agent-delegation-request.v1"
+    delegation_id: str = Field(min_length=1)
+    parent_execution_id: str = Field(min_length=1)
+    parent_agent_id: str = Field(min_length=1)
+    parent_agent_version: str = Field(min_length=1)
+    child_agent_id: str = Field(min_length=1)
+    child_agent_version: str = Field(min_length=1)
+    input_text: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    requested_tool_ids: tuple[str, ...] = ()
+    requested_permissions: tuple[str, ...] = ()
+    max_risk_level: RiskLevel | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def lists_are_unique_and_nonempty(self) -> Self:
+        for name in ("requested_tool_ids", "requested_permissions"):
+            values = getattr(self, name)
+            if any(not value.strip() for value in values):
+                raise ValueError(f"{name} must not contain empty values")
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must not contain duplicates")
+        return self
+
+
+class DelegatedExecutionContext(ContractModel):
+    """Trusted child authority derived from a parent execution context."""
+
+    schema_version: Literal["agent-delegated-execution-context.v1"] = (
+        "agent-delegated-execution-context.v1"
+    )
+    delegation_id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    parent_execution_id: str = Field(min_length=1)
+    parent_agent_id: str = Field(min_length=1)
+    parent_agent_version: str = Field(min_length=1)
+    child_execution_id: str = Field(min_length=1)
+    child_agent_id: str = Field(min_length=1)
+    child_agent_version: str = Field(min_length=1)
+    principal: PrincipalContext
+    authorized_tool_ids: tuple[str, ...] = ()
+    authorized_tool_versions: tuple[str, ...] = ()
+    granted_permissions: tuple[str, ...] = ()
+    max_steps: int = Field(ge=1, le=100)
+    max_risk_level: RiskLevel
+    delegation_depth: int = Field(ge=1, le=100)
+    delegation_path: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def path_is_unique(self) -> Self:
+        if len(self.delegation_path) != len(set(self.delegation_path)):
+            raise ValueError("delegation_path must not contain duplicates")
+        return self
+
+
+class DelegationResult(ContractModel):
+    """Auditable result of one governed child-agent invocation."""
+
+    schema_version: Literal["agent-delegation-result.v1"] = "agent-delegation-result.v1"
+    delegation_id: str = Field(min_length=1)
+    parent_execution_id: str = Field(min_length=1)
+    child_execution_id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    delegation_depth: int = Field(ge=1, le=100)
+    context: DelegatedExecutionContext
+    outcome: AgentOutcome
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def timestamp_is_aware(self) -> Self:
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
+            raise ValueError("created_at must include timezone information")
+        return self
+
+
+class CompositionStep(ContractModel):
+    """One exact registered agent in a composition definition."""
+
+    step_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    agent_version: str = Field(min_length=1)
+
+
+class CompositionDefinition(ContractModel):
+    """Versioned declarative definition for a safe agent composition."""
+
+    schema_version: Literal["agent-composition-definition.v1"] = "agent-composition-definition.v1"
+    composition_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+    version: str = Field(min_length=1)
+    pattern: CompositionPattern
+    steps: list[CompositionStep] = Field(min_length=1)
+    owner_id: str = Field(default="application", min_length=1)
+
+    @field_validator("version")
+    @classmethod
+    def version_is_pep440_component_version(cls, value: str) -> str:
+        return _validate_component_version(value)
+
+    @model_validator(mode="after")
+    def step_ids_are_unique(self) -> Self:
+        step_ids = [step.step_id for step in self.steps]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("composition step IDs must be unique")
+        return self
+
+
+class CompositionResult(ContractModel):
+    """Auditable result containing every governed child outcome."""
+
+    schema_version: Literal["agent-composition-result.v1"] = "agent-composition-result.v1"
+    composition_id: str = Field(min_length=1)
+    composition_version: str = Field(min_length=1)
+    pattern: CompositionPattern
+    parent_execution_id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    outcomes: tuple[AgentOutcome, ...] = ()
+    final_outcome: AgentOutcome
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def timestamp_is_aware(self) -> Self:
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
+            raise ValueError("created_at must include timezone information")
         return self

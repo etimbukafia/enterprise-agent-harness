@@ -25,6 +25,10 @@ class AuditEvent(ContractModel):
     principal_id: str = Field(min_length=1)
     tenant_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    correlation_id: str = Field(default="root", min_length=1)
+    parent_execution_id: str | None = Field(default=None, min_length=1)
+    delegation_id: str | None = Field(default=None, min_length=1)
+    delegation_depth: int = Field(default=0, ge=0, le=100)
     outcome_status: OutcomeStatus | None = None
     safety_flags: list[SafetyFlag] = Field(default_factory=list)
     tool_ids: list[str] = Field(default_factory=list)
@@ -34,6 +38,10 @@ class AuditEvent(ContractModel):
     def timestamp_is_aware(self) -> AuditEvent:
         if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
             raise ValueError("occurred_at must include timezone information")
+        if self.parent_execution_id is None and self.delegation_depth != 0:
+            raise ValueError("root audit event cannot have a delegation depth")
+        if self.parent_execution_id is not None and self.delegation_depth < 1:
+            raise ValueError("delegated audit event must have a positive delegation depth")
         return self
 
 
@@ -93,6 +101,10 @@ class AuditLogger:
         principal: PrincipalContext,
         execution_id: str,
         agent_id: str,
+        correlation_id: str = "root",
+        parent_execution_id: str | None = None,
+        delegation_id: str | None = None,
+        delegation_depth: int = 0,
         outcome_status: OutcomeStatus | None = None,
         safety_flags: list[SafetyFlag] | tuple[SafetyFlag, ...] = (),
         tool_ids: list[str] | None = None,
@@ -115,6 +127,10 @@ class AuditLogger:
                 principal_id=principal.principal_id,
                 tenant_id=principal.tenant_id,
                 session_id=principal.session_id,
+                correlation_id=correlation_id,
+                parent_execution_id=parent_execution_id,
+                delegation_id=delegation_id,
+                delegation_depth=delegation_depth,
                 outcome_status=outcome_status,
                 safety_flags=list(safety_flags),
                 tool_ids=list(tool_ids or []),

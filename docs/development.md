@@ -1,6 +1,6 @@
 # Development workflow
 
-Status: accepted baseline through Phase 8.
+Status: accepted baseline through Phase 10.
 
 ## Supported layout
 
@@ -34,6 +34,8 @@ The package directories have one responsibility each:
 | `evaluation/` | Runtime trace and replay contracts only. |
 | `capabilities/` | Capability contracts and registry export. |
 | `registries.py` | Versioned agent and capability discovery, lifecycle, compatibility, and snapshots. |
+| `factory.py` | Declarative exact-component resolution, runtime profiles, templates, manifests, and agent assembly. |
+| `composition.py` | Runtime-only delegation, parent-child ceilings, composition patterns, depth, cycles, and correlation. |
 
 ## Local commands
 
@@ -71,8 +73,8 @@ require provider credentials in the core test suite.
 - Format with Ruff.
 - Lint with Ruff.
 - Type-check public code with mypy in strict mode.
-- Run tests through public runtime, provider, tool, governance, state, and
-  trace boundaries.
+- Run tests through public runtime, provider, tool, governance, state, registry,
+  factory, composition, and trace boundaries.
 - Compile the package before a release check.
 - Keep CI commands reproducible from `pyproject.toml` and this document.
 

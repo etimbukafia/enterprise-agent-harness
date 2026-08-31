@@ -1,6 +1,6 @@
 # Public API baseline
 
-Status: accepted baseline for Phase 8.
+Status: accepted baseline for Phase 10.
 
 This document defines the smallest API that later phases must preserve. The
 root package may re-export additional compatibility names during the 0.x
@@ -14,7 +14,9 @@ when the versioning rules in `architecture.md` allow it.
 
 | Import | Purpose |
 | --- | --- |
+| `enterprise_agent_harness.AgentConfig` | Declarative factory input with exact component references. |
 | `enterprise_agent_harness.AgentDefinition` | Declarative agent manifest with exact versioned references. |
+| `enterprise_agent_harness.AgentTemplate` | Standard factory template: read-only analyst, action agent, approval-gated operator, or router. |
 | `enterprise_agent_harness.AgentVersion` | Immutable logical agent identity and release version. |
 | `enterprise_agent_harness.PrincipalContext` | Trusted principal, tenant, and session identity. |
 | `enterprise_agent_harness.ExecutionContext` | Trusted authority and execution limits. |
@@ -39,6 +41,12 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.ExecutionCheckpoint` | Versioned, owner-bound continuation data for a paused execution. |
 | `enterprise_agent_harness.RegistryDependency` | Exact dependency edge in a registry snapshot. |
 | `enterprise_agent_harness.RegistrySnapshot` | Versioned, deterministic view of agent, capability, tool, policy, and dependency records. |
+| `enterprise_agent_harness.ResolvedAgentManifest` | Immutable resolved factory snapshot containing exact agent dependencies and runtime options. |
+| `enterprise_agent_harness.RuntimeProfile` | Reusable versioned runtime-limit profile. |
+| `enterprise_agent_harness.DelegationRequest` / `DelegationResult` | Exact parent-authorized child invocation and auditable result. |
+| `enterprise_agent_harness.DelegatedExecutionContext` | Child authority, identity, budget, depth, path, and correlation snapshot. |
+| `enterprise_agent_harness.CompositionDefinition` | Versioned router, supervisor, specialist, or sequential composition definition. |
+| `enterprise_agent_harness.CompositionStep` / `CompositionResult` | Exact child steps and aggregate composition result. |
 | `enterprise_agent_harness.ToolKind` | Read, write, or action classification. |
 | `enterprise_agent_harness.RiskLevel` | Declared risk classification. |
 | `enterprise_agent_harness.OutcomeStatus` | Standard final outcome state. |
@@ -66,6 +74,11 @@ identity and version; a correction is registered as a new version.
 | `enterprise_agent_harness.OpenAIProviderAdapter` | Optional OpenAI Responses API adapter. |
 | `enterprise_agent_harness.normalize_tool_calls` | Normalize provider tool-call shapes into `PlanStep` values. |
 | `enterprise_agent_harness.DefaultProviderCallPolicy` | Finite-timeout, no-retry default provider policy. |
+| `enterprise_agent_harness.AgentFactory` | Validate declarative config, resolve exact dependencies, register/activate agents, and construct governed runtimes. |
+| `enterprise_agent_harness.BuiltAgent` | Resolved manifest plus an optional activated runtime; execution cannot exceed the manifest. |
+| `enterprise_agent_harness.ProviderRegistry` | Exact provider adapter registration and resolution. |
+| `enterprise_agent_harness.RuntimeProfileRegistry` | Exact reusable runtime-profile registration and resolution. |
+| `enterprise_agent_harness.AgentComposer` | Runtime-only delegation and router/supervisor/specialist/sequential composition. |
 
 ## Tool and governance layer
 
@@ -106,6 +119,22 @@ states, and risk ceilings. `snapshot()` returns stable ordering and exact
 dependency edges for deterministic planning; its ID, timestamp, and revision
 are retained as audit evidence.
 
+`AgentFactory.validate()` is read-only. `build(..., dry_run=True)` resolves and
+returns a manifest without registering or constructing a runtime. An active
+build registers the exact definition and creates `BuiltAgent`; standard
+templates reject incompatible authority shapes. `BuiltAgent.execute()` pins
+the agent identity, tool IDs, exact tool versions, and risk ceiling to its
+manifest.
+
+`AgentComposer.delegate()` requires an active factory-built child. It
+intersects parent tool IDs and exact `tool_id@version` authority with the
+child manifest, intersects requested permissions with parent grants, rejects
+child risk above the parent ceiling, and bounds steps by both runtimes. It
+passes the child through `AgentRuntime`; it never calls a handler or provider
+directly. Child traces and audits retain the parent correlation ID and record
+parent execution, delegation depth, and path. Cycles and depth overflow fail
+closed. Approval evidence is not inherited by a child.
+
 `AgentRuntime.execute` accepts `timeout_seconds` and a
 `cancellation_event`. The event can be a standard `threading.Event` or a
 `CancellationToken`. A run checks both controls before each provider call and
@@ -141,6 +170,8 @@ grants authority to another tool or argument set.
 | `enterprise_agent_harness.ProviderError` | Provider call failure. |
 | `enterprise_agent_harness.ProviderTimeoutError` | Provider call timeout with a retry hint. |
 | `enterprise_agent_harness.ExecutionTimeoutError` / `ExecutionCancelledError` | Whole-execution timeout or cancellation categories. |
+| `enterprise_agent_harness.FactoryError` and subclasses | Declarative factory validation, dependency, template, or manifest-authority failure. |
+| `enterprise_agent_harness.DelegationError` and subclasses | Safe delegation or composition failure, including authority, cycle, and depth violations. |
 
 ## State, memory, and evidence layer
 
@@ -179,6 +210,10 @@ policy results, and `RunTrace.tool_executions` contains redacted handler
 execution summaries. The trace does not contain raw provider prompts,
 response content, idempotency keys, or tool output.
 
+`RunTrace` also exposes `correlation_id`, `parent_execution_id`,
+`delegation_id`, `delegation_depth`, and `delegation_path` for reconstructing a
+composed execution tree.
+
 `ExecutionCheckpoint` is stored in the workflow state's `data` by the runtime
 when an approval-gated execution pauses. It contains the exact execution
 context, remaining plan, reviewed request, prior typed evidence, and redacted
@@ -192,6 +227,9 @@ durable broker or pass independently persisted, exact approval evidence.
 - The runtime must accept and return the listed typed contracts without
   provider-specific types.
 - A handler is reached only through `AgentRuntime` and its governance path.
+- A child handler is reached only through a factory-built `AgentRuntime` and
+  receives no authority, budget, or approval evidence beyond the parent
+  execution ceiling.
 - Provider adapters may propose data. They cannot call handlers or change
   authority.
 - Exported trace and replay contracts carry an explicit schema version.

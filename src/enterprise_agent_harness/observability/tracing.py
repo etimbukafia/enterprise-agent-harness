@@ -76,6 +76,11 @@ class TraceRecorder:
             or initial_trace.tenant_id != execution.principal.tenant_id
             or initial_trace.session_id != execution.principal.session_id
             or initial_trace.input_fingerprint != self._input_fingerprint
+            or initial_trace.correlation_id != execution.correlation_id
+            or initial_trace.parent_execution_id != execution.parent_execution_id
+            or initial_trace.delegation_id != execution.delegation_id
+            or initial_trace.delegation_depth != execution.delegation_depth
+            or initial_trace.delegation_path != execution.delegation_path
         ):
             raise ValueError("initial trace does not match the execution")
         self._events: list[TraceEvent] = (
@@ -156,6 +161,11 @@ class TraceRecorder:
             tenant_id=self.execution.principal.tenant_id,
             session_id=self.execution.principal.session_id,
             input_fingerprint=self._input_fingerprint,
+            correlation_id=self.execution.correlation_id,
+            parent_execution_id=self.execution.parent_execution_id,
+            delegation_id=self.execution.delegation_id,
+            delegation_depth=self.execution.delegation_depth,
+            delegation_path=self.execution.delegation_path,
             events=deepcopy(self._events),
             provider_calls=deepcopy(self._provider_calls),
             policy_decisions=deepcopy(self._policy_decisions),

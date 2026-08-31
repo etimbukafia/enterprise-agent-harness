@@ -1,6 +1,6 @@
 # Product brief
 
-Status: accepted product scope; implementation baseline through Phase 8.
+Status: accepted product scope; implementation baseline through Phase 10.
 
 ## Product
 
@@ -50,11 +50,11 @@ The target product provides:
 - registry and factory boundaries for reuse and composition; and
 - stable export contracts for external evaluation and replay.
 
-The build plan defines when each responsibility becomes executable. A
-baseline document does not claim that a later-phase feature is complete. The
-current implementation includes owner-bound durable workflow checkpoints and
-versioned agent/capability discovery; the factory, delegation, scheduling,
-and production integrations remain later-phase work.
+The build plan defines when each responsibility becomes executable. The
+current implementation includes owner-bound durable workflow checkpoints,
+versioned agent/capability discovery, declarative factory assembly, and safe
+runtime-only delegation. Scheduling, cost controls, and production
+integrations remain later-phase work.
 
 ## Supported execution modes
 
@@ -87,6 +87,11 @@ An integration is successful when:
    different principal or a new provider proposal to change its authority.
 9. A consumer can discover compatible, versioned agents and capabilities from
    registry metadata without inspecting implementation code.
+10. A consumer can instantiate an approved agent from configuration and
+    registered components without generating arbitrary code.
+11. A composed execution can delegate to an exact child version without
+    exceeding the parent’s tools, permissions, risk, steps, or approval
+    boundary.
 
 ## Explicit non-goals
 

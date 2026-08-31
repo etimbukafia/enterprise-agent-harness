@@ -29,7 +29,7 @@ requirements.
 See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) for the phase-by-phase
 implementation plan.
 
-The Phase 0B architecture baseline and completed Phase 1-8 boundaries are in
+The Phase 0B architecture baseline and completed Phase 1-10 boundaries are in
 [`docs/architecture.md`](docs/architecture.md). The product scope is in
 [`docs/product-brief.md`](docs/product-brief.md), the public API baseline is in
 [`docs/public-api.md`](docs/public-api.md), and the development commands are
@@ -49,7 +49,7 @@ notes](docs/architecture.md) for provenance and scope.
 The core package does not include an evaluator. A consumer or external
 evaluation system can inspect the exported run trace.
 
-## Phase 1-8 implementation
+## Phase 1-10 implementation
 
 Phase 1 provides declarative agent, capability, policy, tool, identity,
 execution, action, approval, outcome, and error contracts. Phase 2 provides
@@ -73,6 +73,14 @@ optimistic concurrency, retention hooks, and restart hydration for paused
 executions. Phase 8 provides versioned agent and capability registries with
 metadata search, lifecycle controls, compatibility checks, dependency graphs,
 read-only queries, deterministic snapshots, and audit events.
+
+Phase 9 provides declarative `AgentConfig` resolution, reusable runtime
+profiles, standard agent templates, immutable resolved manifests, dry-run
+validation, and registration of factory-built runtimes. Phase 10 provides
+runtime-only agent delegation, parent-child authority ceilings, exact tool
+version propagation, bounded router/supervisor/specialist/sequential
+composition, maximum depth, cycle detection, and shared trace/audit
+correlation.
 
 See [`docs/public-api.md`](docs/public-api.md) for supported imports,
 [`docs/providers.md`](docs/providers.md) for provider integration guidance,

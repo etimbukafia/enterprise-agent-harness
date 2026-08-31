@@ -42,6 +42,11 @@ class RunTrace(ContractModel):
     tenant_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     input_fingerprint: str = Field(min_length=1)
+    correlation_id: str = Field(default="root", min_length=1)
+    parent_execution_id: str | None = Field(default=None, min_length=1)
+    delegation_id: str | None = Field(default=None, min_length=1)
+    delegation_depth: int = Field(default=0, ge=0, le=100)
+    delegation_path: tuple[str, ...] = ()
     events: list[TraceEvent] = Field(default_factory=list)
     provider_calls: list[ProviderCallRecord] = Field(default_factory=list)
     policy_decisions: list[PolicyDecision] = Field(default_factory=list)
@@ -56,6 +61,12 @@ class RunTrace(ContractModel):
             raise ValueError("trace event sequences must start at one and be contiguous")
         if self.generated_at.tzinfo is None or self.generated_at.utcoffset() is None:
             raise ValueError("generated_at must include timezone information")
+        if self.parent_execution_id is None and self.delegation_depth != 0:
+            raise ValueError("root trace cannot have a delegation depth")
+        if self.parent_execution_id is not None and self.delegation_depth < 1:
+            raise ValueError("delegated trace must have a positive delegation depth")
+        if len(self.delegation_path) != len(set(self.delegation_path)):
+            raise ValueError("delegation_path must not contain duplicates")
         return self
 
 

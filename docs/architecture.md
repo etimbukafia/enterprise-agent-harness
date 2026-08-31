@@ -1,6 +1,6 @@
 # Enterprise agent runtime architecture
 
-Status: accepted baseline through Phase 8.
+Status: accepted baseline through Phase 10.
 
 This document defines the boundaries and invariants for the Enterprise Agent
 Harness. Later phases can add implementations. They must not move a
@@ -37,10 +37,10 @@ versioned agent definition declares:
 - owner, lifecycle, and performance metadata.
 
 `AgentRegistry` and `CapabilityRegistry` resolve exact, compatible versions
-from application-owned records. The later agent factory may assemble a
-runtime from these records, but registry lookup and lifecycle enforcement are
-already available. A resolved manifest pins every dependency version before an
-execution starts.
+from application-owned records. `AgentFactory` assembles an active runtime
+from those records and emits a resolved manifest that pins every dependency
+version before an execution starts. `AgentComposer` can invoke only registered,
+factory-built runtime versions.
 
 ## Core invariants
 
@@ -70,6 +70,11 @@ These invariants apply to every execution mode:
     through the same governed plan and authority checks.
 13. Evaluation systems consume exported behavior. Evaluation policy does not
     control runtime authority.
+14. Delegation derives child authority by intersection with the parent context;
+    it cannot add tools, exact tool versions, permissions, risk, steps, or
+    approval evidence.
+15. Delegated executions retain the parent correlation ID, carry an explicit
+    depth and identity path, and fail closed on depth overflow or cycles.
 
 ## Responsibility boundaries
 
@@ -77,7 +82,7 @@ These invariants apply to every execution mode:
 | --- | --- | --- |
 | Identity | Validate the shape and carry the supplied principal. | Authenticate the principal and establish tenant membership. |
 | Authority | Build and enforce the execution ceiling. | Supply business authorization, resource facts, and the initial allowlist. |
-| Agent | Resolve a typed, compatible manifest. | Own agent intent, owner metadata, and deployment choice. |
+| Agent | Resolve a typed, compatible manifest and assemble a governed runtime. | Own agent intent, owner metadata, and deployment choice. |
 | Provider | Define the adapter contract and validate proposals. | Supply the adapter, provider credentials, and provider profile. |
 | Tool | Resolve versions, validate inputs and outputs, and gate invocation. | Supply handlers, data access, credentials, side-effect behavior, and business errors. |
 | Policy | Invoke the policy boundary and enforce the runtime safety ceiling. | Define business policy, resource rules, environment rules, and policy decisions. |
@@ -86,6 +91,7 @@ These invariants apply to every execution mode:
 | State | Define ownership, version, resume, migration, and retention-hook contracts; persist trusted continuation data. | Choose durable storage, encryption, retention, backups, and deployment. |
 | Memory | Provide an optional strategy boundary and safety labels. | Choose memory content, retrieval, retention, and deletion policy. |
 | Registry | Define records, resolution, lifecycle checks, and compatibility checks. | Own registration, metadata, approval to activate, and operational storage. |
+| Composition | Enforce parent-child ceilings, depth, cycle checks, and runtime routing. | Choose composition definitions, delegation reasons, and business workflow semantics. |
 | Trace and audit | Define event contracts, sequencing, and default redaction. | Choose sinks, retention, access control, and downstream analysis. |
 | Evaluation | Export stable trace and replay contracts. | Own cases, graders, metrics, baselines, and promotion decisions. |
 
@@ -141,6 +147,37 @@ provider outcome proposal -> evidence verification -> safety decision
           v
 runtime-owned outcome -> state transition -> trace and audit export
 ```
+
+Factory construction happens before this execution path. The declarative
+configuration is resolved against active exact registry records, provider and
+runtime-profile registries, memory/state strategies, and application policy
+boundaries. A dry run returns the manifest without registration or runtime
+construction. An active build registers the exact agent definition and keeps
+the manifest with the runtime.
+
+### Composition and delegation
+
+`AgentComposer` is the only Phase 10 peer-invocation boundary. A delegation
+request identifies exact parent and child agent versions and is checked against
+the live parent `ExecutionContext`. The child must be active and factory-built.
+The composer intersects parent-authorized tool IDs and exact `tool_id@version`
+references with the child manifest, intersects requested permissions with
+parent grants, rejects a child risk above the parent ceiling, and limits child
+steps to the smaller parent and child budgets. Approval digests are never
+inherited; a child action must pass its own approval boundary.
+
+The child is then called through `BuiltAgent.execute`, which routes into
+`AgentRuntime`; the composer does not call a handler or provider directly. The
+child receives the same principal and correlation ID plus a parent execution
+ID, delegation ID, positive depth, and an identity path. The path rejects
+cycles and the configured maximum depth rejects unbounded fan-out. Router and
+specialist patterns select one child, supervisor fans out to all declared
+children, and sequential workflows pass a completed child summary to the next
+child while stopping on a non-completed outcome.
+
+Trace and audit records for a child carry the shared correlation ID and
+delegation metadata, so a consumer can reconstruct the parent-child run tree
+without treating child authority as an independent root.
 
 The runtime stops at the first unsafe or invalid boundary unless the agent
 contract explicitly permits a bounded partial result. A denied, unapproved,
@@ -220,6 +257,24 @@ agent-to-policy, capability-to-tool, and tool-to-tool dependency edges.
 Mutation and snapshot events use `RegistryAuditEvent` and an application-owned
 `RegistryAuditSink`; the snapshot revision and event history make registry
 state auditable.
+
+## Declarative agent factory
+
+`AgentConfig` is the factory input. It names one exact agent version, provider
+profile, optional runtime profile or direct limits, exact capabilities/tools/
+policies, risk and approval requirements, and optional state and memory
+strategies. `RuntimeProfileRegistry` and `ProviderRegistry` resolve immutable
+exact records. Standard templates validate common authority shapes: a
+read-only analyst cannot expose side-effecting tools, an action agent must
+expose one, an approval-gated operator must declare side-effect and review
+control, and a router is composition-oriented.
+
+`AgentFactory.validate()` performs dependency and compatibility resolution
+without mutation. `build()` can dry-run, register the definition, activate it,
+and construct `AgentRuntime` with the resolved components. `BuiltAgent` keeps
+identity, tool versions, and risk bounded by its `ResolvedAgentManifest`; a
+caller cannot override the pinned agent identity or grant a tool outside the
+manifest. The factory does not generate arbitrary code.
 
 ## Tool runtime and registry
 
@@ -422,7 +477,13 @@ The following decisions are accepted for this baseline:
 - `adr/0007-durable-state-and-resume.md` - owner-bound durable checkpoints,
   optimistic concurrency, retention, and migrations; and
 - `adr/0008-versioned-agent-capability-registries.md` - immutable registry
-  records, compatibility checks, lifecycle, snapshots, and audit.
+  records, compatibility checks, lifecycle, snapshots, and audit; and
+- `adr/0009-declarative-agent-factory.md` - declarative exact-component
+  assembly, runtime profiles, templates, manifests, registration, and dry run;
+  and
+- `adr/0010-bounded-composition-and-delegation.md` - parent-child authority
+  ceilings, runtime-only delegation, composition patterns, depth, cycles, and
+  correlation.
 
 Phase 0B establishes the decisions and skeleton. Phases 1 and 2 implement the
 core contracts, provider-neutral request/response boundary, deterministic fake,
@@ -433,6 +494,9 @@ boundaries. Phase 5 implements the bounded coordinator and run controls. Phase
  expiry, and review outcomes. Phase 7 implements owner-bound durable workflow
  state, checkpoint hydration, and retention/version hooks. Phase 8 implements
  agent and capability discovery, lifecycle, compatibility validation, and
- auditable deterministic snapshots. Later phases implement factory behavior,
- delegation, background execution, cost controls, and production integrations.
-Those features must use this baseline.
+ auditable deterministic snapshots. Phase 9 implements declarative factory
+ resolution, reusable runtime profiles, templates, manifests, registration,
+ and dry runs. Phase 10 implements runtime-only delegation, composition
+ patterns, authority ceilings, depth/cycle controls, and shared correlation.
+ Background execution, cost controls, and production integrations remain later
+ phases and must use this baseline.

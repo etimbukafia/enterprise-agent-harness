@@ -39,6 +39,7 @@ from ..contracts import (
     SafetyFlag,
     ToolCall,
     ToolCallRecord,
+    ToolDescriptor,
     ToolExecutionRecord,
     ToolResult,
     ToolResultStatus,
@@ -242,12 +243,19 @@ class AgentRuntime:
         agent_id: str = "agent",
         agent_version: str = "1.0.0",
         authorized_tool_ids: Sequence[str] = (),
+        authorized_tool_versions: Sequence[str] = (),
         granted_permissions: Sequence[str] = (),
         approved_action_digests: Sequence[str] = (),
         state_id: str | None = None,
         execution_id: str | None = None,
         environment: str | None = None,
         max_risk_level: RiskLevel | None = None,
+        max_steps: int | None = None,
+        correlation_id: str | None = None,
+        parent_execution_id: str | None = None,
+        delegation_id: str | None = None,
+        delegation_depth: int = 0,
+        delegation_path: Sequence[str] = (),
         resource: ResourceContext | None = None,
         timeout_seconds: float | None = None,
         cancellation_event: CancellationSignal | None = None,
@@ -262,6 +270,8 @@ class AgentRuntime:
 
         if cancellation_event is not None and cancel_event is not None:
             raise ValueError("provide only one cancellation signal")
+        if max_steps is not None and not 1 <= max_steps <= self.config.max_plan_steps:
+            raise ValueError("max_steps must be within the configured plan step limit")
         control = ExecutionControl(
             timeout_seconds=(
                 self.config.execution_timeout_seconds
@@ -278,12 +288,19 @@ class AgentRuntime:
                 agent_id=agent_id,
                 agent_version=agent_version,
                 authorized_tool_ids=authorized_tool_ids,
+                authorized_tool_versions=authorized_tool_versions,
                 granted_permissions=granted_permissions,
                 approved_action_digests=approved_action_digests,
                 state_id=state_id,
                 execution_id=execution_id,
                 environment=environment,
                 max_risk_level=max_risk_level,
+                max_steps=max_steps,
+                correlation_id=correlation_id,
+                parent_execution_id=parent_execution_id,
+                delegation_id=delegation_id,
+                delegation_depth=delegation_depth,
+                delegation_path=delegation_path,
                 resource=resource,
                 control=control,
                 _plan_override=_plan_override,
@@ -406,6 +423,7 @@ class AgentRuntime:
                 agent_id=pending.execution.agent_id,
                 agent_version=pending.execution.agent_version,
                 authorized_tool_ids=pending.execution.authorized_tool_ids,
+                authorized_tool_versions=pending.execution.authorized_tool_versions,
                 granted_permissions=pending.execution.granted_permissions,
                 approved_action_digests=(
                     *pending.execution.approved_action_digests,
@@ -415,6 +433,12 @@ class AgentRuntime:
                 execution_id=pending.execution.execution_id,
                 environment=pending.execution.environment,
                 max_risk_level=pending.execution.max_risk_level,
+                max_steps=pending.execution.max_steps,
+                correlation_id=pending.execution.correlation_id,
+                parent_execution_id=pending.execution.parent_execution_id,
+                delegation_id=pending.execution.delegation_id,
+                delegation_depth=pending.execution.delegation_depth,
+                delegation_path=pending.execution.delegation_path,
                 resource=pending.resource,
                 _plan_override=pending.resume_plan,
                 _composition_plan_override=pending.plan,
@@ -436,12 +460,19 @@ class AgentRuntime:
         agent_id: str = "agent",
         agent_version: str = "1.0.0",
         authorized_tool_ids: Sequence[str] = (),
+        authorized_tool_versions: Sequence[str] = (),
         granted_permissions: Sequence[str] = (),
         approved_action_digests: Sequence[str] = (),
         state_id: str | None = None,
         execution_id: str | None = None,
         environment: str | None = None,
         max_risk_level: RiskLevel | None = None,
+        max_steps: int | None = None,
+        correlation_id: str | None = None,
+        parent_execution_id: str | None = None,
+        delegation_id: str | None = None,
+        delegation_depth: int = 0,
+        delegation_path: Sequence[str] = (),
         resource: ResourceContext | None = None,
         control: ExecutionControl,
         _plan_override: AgentPlan | None = None,
@@ -473,12 +504,18 @@ class AgentRuntime:
             agent_version=agent_version,
             principal=principal,
             authorized_tool_ids=tuple(authorized_tool_ids),
+            authorized_tool_versions=tuple(authorized_tool_versions),
             granted_permissions=tuple(granted_permissions),
             approved_action_digests=tuple(approved_action_digests),
-            max_steps=self.config.max_plan_steps,
+            max_steps=max_steps or self.config.max_plan_steps,
             state_id=state.state_id,
             environment=environment or self.config.environment,
             max_risk_level=max_risk_level or self.config.max_risk_level,
+            correlation_id=correlation_id or resolved_execution_id,
+            parent_execution_id=parent_execution_id,
+            delegation_id=delegation_id,
+            delegation_depth=delegation_depth,
+            delegation_path=tuple(delegation_path),
         )
         trace = TraceRecorder(
             execution=execution,
@@ -501,16 +538,32 @@ class AgentRuntime:
                 trace=trace,
                 tool_calls=tool_calls,
             )
+        execution_metadata = {"input_length": str(len(text))}
+        if execution.parent_execution_id is not None:
+            execution_metadata.update(
+                {
+                    "parent_execution_id": execution.parent_execution_id,
+                    "delegation_depth": str(execution.delegation_depth),
+                }
+            )
+            if execution.delegation_id is not None:
+                execution_metadata["delegation_id"] = execution.delegation_id
         trace.record(
             stage="runtime",
             event_type="execution_started",
-            metadata={"input_length": str(len(text))},
+            metadata=execution_metadata,
         )
+        if execution.parent_execution_id is not None:
+            trace.record(
+                stage="delegation",
+                event_type="delegation_started",
+                metadata=execution_metadata,
+            )
         self._audit(
             event_type="execution_started",
             principal=principal,
             execution=execution,
-            metadata={"input_length": str(len(text))},
+            metadata=execution_metadata,
         )
 
         control.check()
@@ -560,7 +613,7 @@ class AgentRuntime:
                     capabilities=[
                         capability.model_copy(deep=True) for capability in self.capabilities
                     ],
-                    tools=self.tools.descriptors(self._visible_tool_ids(execution)),
+                    tools=self._visible_tool_descriptors(execution),
                 )
                 trace.record(
                     stage="interpretation",
@@ -606,7 +659,7 @@ class AgentRuntime:
                 context=context,
                 execution=execution,
                 capabilities=[capability.model_copy(deep=True) for capability in self.capabilities],
-                tools=self.tools.descriptors(self._visible_tool_ids(execution)),
+                tools=self._visible_tool_descriptors(execution),
                 interpretation=interpretation,
             )
             try:
@@ -666,7 +719,7 @@ class AgentRuntime:
             )
 
         try:
-            self._validate_plan(plan)
+            self._validate_plan(plan, execution=execution)
         except ToolInvocationError as exc:
             trace.record(
                 stage="planning",
@@ -2219,12 +2272,20 @@ class AgentRuntime:
             tool_results=tool_results,
         )
 
-    def _validate_plan(self, plan: AgentPlan) -> None:
-        if len(plan.steps) > self.config.max_plan_steps:
+    def _validate_plan(self, plan: AgentPlan, *, execution: ExecutionContext) -> None:
+        step_limit = min(self.config.max_plan_steps, execution.max_steps)
+        if len(plan.steps) > step_limit:
             raise ToolInvocationError(
                 "plan exceeds the configured step limit", code="plan_too_long"
             )
         for step in plan.steps:
+            if execution.authorized_tool_versions and (
+                f"{step.tool_id}@{step.tool_version}" not in execution.authorized_tool_versions
+            ):
+                raise ToolInvocationError(
+                    f"tool version is not authorized: {step.tool_id}@{step.tool_version}",
+                    code="tool_version_not_authorized",
+                )
             self.tools.get(step.tool_id, step.tool_version)
 
     def _visible_tool_ids(self, execution: ExecutionContext) -> tuple[str, ...]:
@@ -2234,6 +2295,19 @@ class AgentRuntime:
         if not self.capabilities:
             return tuple(sorted(authorized))
         return tuple(sorted(authorized.intersection(self._capability_tool_ids)))
+
+    def _visible_tool_descriptors(self, execution: ExecutionContext) -> list[ToolDescriptor]:
+        """Return only exact tool versions visible to the provider proposal boundary."""
+
+        descriptors = self.tools.descriptors(self._visible_tool_ids(execution))
+        if not execution.authorized_tool_versions:
+            return descriptors
+        allowed = set(execution.authorized_tool_versions)
+        return [
+            descriptor
+            for descriptor in descriptors
+            if f"{descriptor.tool_id}@{descriptor.version}" in allowed
+        ]
 
     def _decision_outcome(
         self,
@@ -2320,6 +2394,15 @@ class AgentRuntime:
                         "recovery": RecoveryAction.ABORT,
                     }
                 )
+        if execution.parent_execution_id is not None:
+            delegation_metadata = {"status": outcome.status.value}
+            if execution.delegation_id is not None:
+                delegation_metadata["delegation_id"] = execution.delegation_id
+            trace.record(
+                stage="delegation",
+                event_type="delegation_completed",
+                metadata=delegation_metadata,
+            )
         trace.record(
             stage="runtime",
             event_type="execution_terminal",
@@ -2372,6 +2455,10 @@ class AgentRuntime:
             principal=principal,
             execution_id=execution.execution_id,
             agent_id=execution.agent_id,
+            correlation_id=execution.correlation_id,
+            parent_execution_id=execution.parent_execution_id,
+            delegation_id=execution.delegation_id,
+            delegation_depth=execution.delegation_depth,
             outcome_status=outcome_status,
             safety_flags=safety_flags,
             tool_ids=tool_ids,
