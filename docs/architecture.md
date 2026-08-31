@@ -1,6 +1,6 @@
 # Enterprise agent runtime architecture
 
-Status: accepted baseline through Phase 14.
+Status: accepted baseline through Phase 15.
 
 This document defines the boundaries and invariants for the Enterprise Agent
 Harness. Later phases can add implementations. They must not move a
@@ -493,6 +493,17 @@ They cannot change permissions, policy, approval, or execution authority.
 Recorded replay validates and reconstructs exported trace evidence. It does not
 call providers, tools, handlers, approvals, or state stores. It is safe for
 irreversible actions because it does not perform live execution.
+
+## Developer examples
+
+The `examples` package uses only public contracts. It shows governed execution,
+approval resume, delegation, event handling, registry discovery, factory use,
+and external evaluation. The examples use deterministic providers and local
+stores. They do not define production deployment patterns.
+
+`quickstart.md` shows the shortest factory path. `production-extension-points.md`
+lists consumer-owned production boundaries. `architecture-diagrams.md` shows
+the governed flows without adding a runtime component.
 
 ## Package and quality baseline
 

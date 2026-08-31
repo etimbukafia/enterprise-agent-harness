@@ -483,20 +483,24 @@ Allow independent evaluation and improvement systems to consume harness behavior
 
 ## Phase 15: Developer Experience and Reference Examples
 
+Status: complete. Evidence: `docs/quickstart.md`, `examples/`,
+`docs/production-extension-points.md`, `docs/architecture-diagrams.md`, and
+the quality workflow.
+
 ### Objective
 Make the harness understandable and adoptable without weakening its contracts.
 
 ### Tasks
-- [ ] Write quickstart.
-- [ ] Add a minimal read-only analyst example.
-- [ ] Add a write-tool example with idempotency.
-- [ ] Add an approval-gated action example.
-- [ ] Add a router plus specialist composition example.
-- [ ] Add an event-driven example.
-- [ ] Add agent factory examples.
-- [ ] Add registry query examples.
-- [ ] Document production extension points.
-- [ ] Add architecture diagrams.
+- [x] Write quickstart.
+- [x] Add a minimal read-only analyst example.
+- [x] Add a write-tool example with idempotency.
+- [x] Add an approval-gated action example.
+- [x] Add a router plus specialist composition example.
+- [x] Add an event-driven example.
+- [x] Add agent factory examples.
+- [x] Add registry query examples.
+- [x] Document production extension points.
+- [x] Add architecture diagrams.
 
 ### Exit criteria
 - A developer can build and run a governed agent in under 15 minutes.

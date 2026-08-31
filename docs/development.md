@@ -1,6 +1,6 @@
 # Development workflow
 
-Status: accepted baseline through Phase 10.
+Status: accepted baseline through Phase 15.
 
 ## Supported layout
 
@@ -49,16 +49,24 @@ python -m pip install -e ".[dev]"
 Run the same checks as CI:
 
 ```text
-python -m ruff format --check src tests
-python -m ruff check src tests
+python -m ruff format --check src tests examples
+python -m ruff check src tests examples
 python -m mypy src
 python -m pytest -q
-python -m compileall -q src tests
+python -m compileall -q src tests examples
 ```
 
 The core package must run without a model API key. Use the deterministic
 provider for normal tests. Add a real provider test only when a fake provider
 cannot prove the provider contract.
+
+Run the reference examples from the repository root. They use the source
+layout without an installed package:
+
+```text
+$env:PYTHONPATH = "src"
+python -m examples.quickstart
+```
 
 Install the optional OpenAI adapter only for an integration that selects it:
 

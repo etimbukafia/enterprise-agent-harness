@@ -35,6 +35,19 @@ The Phase 0B architecture baseline and completed Phase 1-10 boundaries are in
 [`docs/public-api.md`](docs/public-api.md), and the development commands are
 in [`docs/development.md`](docs/development.md).
 
+## Quickstart and examples
+
+Start with the [quickstart](docs/quickstart.md). It builds and runs one
+governed read-only agent with the deterministic provider.
+
+The `examples/` directory contains small runnable patterns for read tools,
+idempotent writes, approval, delegation, event handling, factory use, registry
+queries, and external evaluation. Run an example from the repository root:
+
+```text
+python -m examples.quickstart
+```
+
 ## Phase 0A implementation
 
 Phase 0A provides a provider adapter, typed read/write/action tool boundary,
@@ -49,7 +62,7 @@ notes](docs/architecture.md) for provenance and scope.
 The core package does not include an evaluator. A consumer or external
 evaluation system can inspect the exported run trace.
 
-## Phase 1-10 implementation
+## Phase 1-15 implementation
 
 Phase 1 provides declarative agent, capability, policy, tool, identity,
 execution, action, approval, outcome, and error contracts. Phase 2 provides
@@ -93,3 +106,8 @@ redaction, and stable correlation across retries and resumptions.
 See [`docs/public-api.md`](docs/public-api.md) for supported imports,
 [`docs/providers.md`](docs/providers.md) for provider integration guidance,
 and [`docs/development.md`](docs/development.md) for local quality commands.
+
+Phase 14 adds an external evaluation integration contract. Phase 15 adds the
+quickstart, reference examples, production extension-point guidance, and
+runtime flow diagrams. The examples use local deterministic components. They
+are not production deployments.
