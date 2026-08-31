@@ -23,14 +23,23 @@ second authority system or silently select a newer component version.
    an `AgentRuntime` from the resolved components.
 4. Standard templates validate common shapes: a read-only analyst cannot
    expose a side-effecting tool; an action agent must expose one; an
-   approval-gated operator must expose side-effect and review control; and a
-   router is composition-oriented.
-5. `ResolvedAgentManifest` is a frozen, versioned snapshot containing the
-   source configuration, agent definition, exact dependencies, provider,
-   runtime limits, strategy choices, template, and a stable content digest.
-   `BuiltAgent` pins execution identity, tool versions, and risk to this
-   manifest.
-6. The factory never generates arbitrary code and never gives a provider
+   approval-gated operator must expose side-effect and review control for every
+   write or action tool; and a router is composition-oriented. The approval
+   gate must be executable through tool metadata or a matching active allow
+   policy rule. `approval_requirements` is metadata and cannot satisfy the
+   template by itself.
+5. `ResolvedAgentManifest` is a frozen, versioned, tamper-evident snapshot
+   containing the source configuration, agent definition, exact dependencies,
+   provider, runtime limits, strategy choices, template, and a stable content
+   digest. `BuiltAgent` stores a private immutable authority snapshot and
+   checks the public manifest digest before execution. Provider and tool
+   authority comes from the private snapshot, not from mutable nested manifest
+   data.
+6. Every factory-created runtime is bound to the exact agent ID and version and
+   checks live registry authority before each new execution and resume. The
+   same guard applies when a caller reaches the runtime through
+   `BuiltAgent.runtime`; an inactive agent or dependency cannot continue.
+7. The factory never generates arbitrary code and never gives a provider
    handlers, credentials, permission authority, or approval authority.
 
 ## Consequences

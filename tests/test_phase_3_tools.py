@@ -81,7 +81,10 @@ def test_registry_registers_resolves_lists_and_lifecycle_controls_versions() -> 
     with pytest.raises(ToolInvocationError, match="deprecated"):
         registry.resolve("lookup", "1.0.0")
 
-    registry.activate("lookup", "1.0.0")
+    with pytest.raises(ToolInvocationError, match="deprecated"):
+        registry.activate("lookup", "1.0.0")
+
+    registry = ToolRegistry([tool()])
     registry.disable("lookup", "1.0.0")
     with pytest.raises(ToolInvocationError, match="disabled"):
         registry.resolve("lookup", "1.0.0")

@@ -27,6 +27,12 @@ class ErrorCode(str, Enum):
     PROVIDER_TIMEOUT = "provider_timeout"
     EXECUTION_TIMEOUT = "execution_timeout"
     EXECUTION_CANCELLED = "execution_cancelled"
+    RUNTIME_AUTHORIZATION_FAILED = "runtime_authorization_failed"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    LEASE_CONFLICT = "lease_conflict"
+    LEASE_EXPIRED = "lease_expired"
+    DUPLICATE_EVENT = "duplicate_event"
+    DEAD_LETTERED = "dead_lettered"
 
 
 class HarnessError(RuntimeError):
@@ -123,8 +129,23 @@ class ExecutionCancelledError(HarnessError):
         super().__init__(message, code=ErrorCode.EXECUTION_CANCELLED)
 
 
+class RuntimeAuthorizationError(HarnessError):
+    """Raised when a runtime is no longer authorized to start or resume work."""
+
+    def __init__(self, message: str = "runtime execution is not authorized") -> None:
+        super().__init__(message, code=ErrorCode.RUNTIME_AUTHORIZATION_FAILED)
+
+
+class BudgetExhaustedError(HarnessError):
+    """Raised when a trusted execution budget is exhausted mid-run."""
+
+    def __init__(self, message: str = "execution budget exhausted") -> None:
+        super().__init__(message, code=ErrorCode.BUDGET_EXHAUSTED)
+
+
 __all__ = [
     "ApprovalRequiredError",
+    "BudgetExhaustedError",
     "ContractValidationError",
     "ErrorCode",
     "ExecutionCancelledError",
@@ -134,6 +155,7 @@ __all__ = [
     "ProviderError",
     "ProviderOutputError",
     "ProviderTimeoutError",
+    "RuntimeAuthorizationError",
     "ToolFailureError",
     "ToolValidationError",
 ]

@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import RLock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -22,6 +22,8 @@ from .contracts import (
     AgentTemplate,
     CapabilityDefinition,
     PolicyDefinition,
+    PolicyEffect,
+    PolicyRule,
     PrincipalContext,
     ProviderProfile,
     ResolvedAgentManifest,
@@ -31,6 +33,7 @@ from .contracts import (
     ToolDescriptor,
     ToolKind,
 )
+from .errors import RuntimeAuthorizationError
 from .governance.approvals import ApprovalBroker, ApprovalPolicyEvaluator
 from .governance.permissions import (
     DefaultPermissionBroker,
@@ -39,6 +42,7 @@ from .governance.permissions import (
 from .governance.safety import SafetyPolicy
 from .memory.strategies import MemoryStrategy
 from .observability.audit import AuditSink
+from .observability.failures import ObservabilityFailureReporter
 from .observability.tracing import TraceSink
 from .providers.base import ProviderAdapter
 from .providers.invocation import ProviderCallPolicy
@@ -46,6 +50,9 @@ from .registries import AgentRegistry, RegistryError
 from .runtime.execution import AgentRuntime
 from .state.store import StateStore
 from .tools.definitions import ToolDefinition, ToolInvocationError
+
+if TYPE_CHECKING:
+    from .evaluation.contracts import RunTrace
 
 
 class FactoryError(ValueError):
@@ -161,6 +168,20 @@ class RuntimeProfileRegistry:
 
 
 @dataclass(frozen=True)
+class _ManifestAuthority:
+    """Immutable build-time authority used independently of the public manifest."""
+
+    manifest_digest: str
+    agent_id: str
+    agent_version: str
+    allowed_tool_ids: tuple[str, ...]
+    allowed_tool_versions: tuple[str, ...]
+    tool_permissions: tuple[tuple[str, tuple[str, ...]], ...]
+    risk_level: RiskLevel
+    max_plan_steps: int
+
+
+@dataclass(frozen=True)
 class BuiltAgent:
     """A resolved manifest and its governed runtime, when activation is enabled."""
 
@@ -169,6 +190,7 @@ class BuiltAgent:
     registered: bool
     dry_run: bool
     registry: AgentRegistry | None = None
+    _authority: _ManifestAuthority | None = None
 
     def execute(
         self,
@@ -186,21 +208,18 @@ class BuiltAgent:
             raise FactoryError("the agent is dry-run only or has not been activated")
         if "agent_id" in kwargs or "agent_version" in kwargs:
             raise FactoryAuthorizationError("built agent identity cannot be overridden")
+        self._assert_manifest_integrity()
+        authority = self._require_authority()
         if self.registry is not None:
             try:
-                self.registry.resolve(self.manifest.agent.agent_id, self.manifest.agent.version)
+                self.registry.resolve(authority.agent_id, authority.agent_version)
             except RegistryError as exc:
                 raise FactoryAuthorizationError(
                     "the registered agent version is not active"
                 ) from exc
 
-        allowed_versions = tuple(
-            f"{reference.component_id}@{reference.version}"
-            for reference in self.manifest.agent.allowed_tools
-        )
-        allowed_ids = tuple(
-            dict.fromkeys(reference.component_id for reference in self.manifest.agent.allowed_tools)
-        )
+        allowed_versions = authority.allowed_tool_versions
+        allowed_ids = authority.allowed_tool_ids
         if authorized_tool_ids is None:
             selected_ids = allowed_ids
         else:
@@ -230,7 +249,7 @@ class BuiltAgent:
                 raise FactoryAuthorizationError(
                     "authorized tool versions must belong to authorized tool IDs"
                 )
-        effective_risk = self.manifest.agent.risk_level
+        effective_risk = authority.risk_level
         if max_risk_level is not None:
             if _risk_exceeds(max_risk_level, effective_risk):
                 raise FactoryAuthorizationError("risk authority is outside the manifest")
@@ -238,13 +257,87 @@ class BuiltAgent:
         return self.runtime.execute(
             principal,
             input_text,
-            agent_id=self.manifest.agent.agent_id,
-            agent_version=self.manifest.agent.version,
+            agent_id=authority.agent_id,
+            agent_version=authority.agent_version,
             authorized_tool_ids=selected_ids,
             authorized_tool_versions=selected_versions,
             max_risk_level=effective_risk,
             **kwargs,
         )
+
+    def trace_for(self, execution_id: str) -> RunTrace:
+        """Return stable trace evidence for an execution of this built agent."""
+
+        if self.runtime is None:
+            raise FactoryError("the agent is dry-run only or has not been activated")
+        return self.runtime.trace_for(execution_id)
+
+    def _assert_manifest_integrity(self) -> None:
+        """Reject changes to the public manifest before provider execution."""
+
+        authority = self._require_authority()
+        try:
+            calculated_digest = _calculate_manifest_digest(
+                manifest_id=self.manifest.manifest_id,
+                source=self.manifest.source,
+                agent=self.manifest.agent,
+                capabilities=self.manifest.capabilities,
+                tools=self.manifest.tools,
+                policies=self.manifest.policies,
+                provider_profile=self.manifest.provider_profile,
+                runtime_profile=self.manifest.runtime_profile,
+                runtime_limits=self.manifest.runtime_limits,
+                template=self.manifest.template,
+            )
+        except Exception as exc:
+            raise FactoryAuthorizationError("resolved manifest integrity check failed") from exc
+        if (
+            self.manifest.manifest_digest != authority.manifest_digest
+            or calculated_digest != authority.manifest_digest
+        ):
+            raise FactoryAuthorizationError("resolved manifest integrity check failed")
+
+    def _require_authority(self) -> _ManifestAuthority:
+        if self._authority is None:
+            raise FactoryAuthorizationError("built agent has no trusted authority snapshot")
+        return self._authority
+
+    @property
+    def _trusted_agent_identity(self) -> tuple[str, str]:
+        """Return the exact agent identity captured at build time."""
+
+        authority = self._require_authority()
+        return authority.agent_id, authority.agent_version
+
+    @property
+    def _trusted_allowed_tool_ids(self) -> tuple[str, ...]:
+        """Return the build-time tool identity ceiling."""
+
+        return self._require_authority().allowed_tool_ids
+
+    @property
+    def _trusted_allowed_tool_versions(self) -> tuple[str, ...]:
+        """Return the build-time exact tool version ceiling."""
+
+        return self._require_authority().allowed_tool_versions
+
+    @property
+    def _trusted_tool_permissions(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """Return build-time permission requirements for exact tools."""
+
+        return self._require_authority().tool_permissions
+
+    @property
+    def _trusted_risk_level(self) -> RiskLevel:
+        """Return the build-time agent risk ceiling."""
+
+        return self._require_authority().risk_level
+
+    @property
+    def _trusted_max_plan_steps(self) -> int:
+        """Return the build-time plan-step ceiling."""
+
+        return self._require_authority().max_plan_steps
 
 
 @dataclass(frozen=True)
@@ -282,6 +375,7 @@ class AgentFactory:
         safety_policy: SafetyPolicy | None = None,
         trace_sink: TraceSink | None = None,
         audit_sink: AuditSink | None = None,
+        failure_reporter: ObservabilityFailureReporter | None = None,
         provider_call_policy: ProviderCallPolicy | None = None,
         id_factory: Callable[[str], str] | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -305,6 +399,7 @@ class AgentFactory:
         self.safety_policy = safety_policy
         self.trace_sink = trace_sink
         self.audit_sink = audit_sink
+        self.failure_reporter = failure_reporter
         self.provider_call_policy = provider_call_policy
         self._id = id_factory or (lambda prefix: f"{prefix}_{uuid4().hex[:10]}")
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -361,17 +456,28 @@ class AgentFactory:
                 safety_policy=self.safety_policy,
                 trace_sink=self.trace_sink,
                 audit_sink=self.audit_sink,
+                failure_reporter=self.failure_reporter,
                 config=resolved.runtime_limits,
                 provider_call_policy=self.provider_call_policy,
                 id_factory=self._id,
                 clock=self._clock,
+                execution_guard=self._runtime_execution_guard,
+                bound_agent_id=resolved.definition.agent_id,
+                bound_agent_version=resolved.definition.version,
             )
+        authority = _manifest_authority(
+            manifest=resolved.manifest,
+            definition=resolved.definition,
+            tools=resolved.tools,
+            runtime_limits=resolved.runtime_limits,
+        )
         built = BuiltAgent(
             manifest=resolved.manifest,
             runtime=runtime,
             registered=registered,
             dry_run=dry_run,
-            registry=self.agent_registry if registered else None,
+            registry=self.agent_registry if runtime is not None else None,
+            _authority=authority,
         )
         if runtime is not None:
             with self._lock:
@@ -414,15 +520,27 @@ class AgentFactory:
             runtime_limits = config.runtime_limits or RuntimeConfig()
 
         capabilities = tuple(
-            self._resolve_capability(reference.component_id, reference.version)
+            self._resolve_capability(
+                reference.component_id,
+                reference.version,
+                require_active=activate,
+            )
             for reference in config.capabilities
         )
         tools = tuple(
-            self._resolve_tool(reference.component_id, reference.version)
+            self._resolve_tool(
+                reference.component_id,
+                reference.version,
+                require_active=activate,
+            )
             for reference in config.allowed_tools
         )
         policies = tuple(
-            self._resolve_policy(reference.component_id, reference.version)
+            self._resolve_policy(
+                reference.component_id,
+                reference.version,
+                require_active=activate,
+            )
             for reference in config.policies
         )
         target_lifecycle = (
@@ -447,7 +565,10 @@ class AgentFactory:
             performance_metadata=deepcopy(config.performance_metadata),
         )
         try:
-            self.agent_registry.check_compatibility(definition)
+            self.agent_registry.check_compatibility(
+                definition,
+                require_active_dependencies=activate,
+            )
         except RegistryError as exc:
             raise FactoryDependencyError(str(exc)) from exc
         self._validate_template(config, tools=tools, policies=policies)
@@ -477,24 +598,68 @@ class AgentFactory:
             manifest=manifest,
         )
 
-    def _resolve_capability(self, capability_id: str, version: str) -> CapabilityDefinition:
+    def _resolve_capability(
+        self,
+        capability_id: str,
+        version: str,
+        *,
+        require_active: bool,
+    ) -> CapabilityDefinition:
         try:
-            capability = self.agent_registry.capabilities.resolve(capability_id, version)
+            if require_active:
+                capability = self.agent_registry.capabilities.resolve(capability_id, version)
+            else:
+                capability = self.agent_registry.capabilities.get(capability_id, version)
+                if capability.lifecycle not in {
+                    AgentLifecycleStatus.VALIDATED,
+                    AgentLifecycleStatus.ACTIVE,
+                }:
+                    raise RegistryError(f"capability is not validated: {capability_id}@{version}")
         except RegistryError as exc:
             raise FactoryDependencyError(str(exc)) from exc
         return capability
 
-    def _resolve_tool(self, tool_id: str, version: str) -> ToolDefinition:
+    def _resolve_tool(
+        self,
+        tool_id: str,
+        version: str,
+        *,
+        require_active: bool,
+    ) -> ToolDefinition:
         try:
-            return self.agent_registry.tools.get(tool_id, version)
+            tool = self.agent_registry.tools.get(
+                tool_id,
+                version,
+                include_inactive=not require_active,
+            )
+            if not require_active and tool.lifecycle not in {
+                AgentLifecycleStatus.VALIDATED,
+                AgentLifecycleStatus.ACTIVE,
+            }:
+                raise ToolInvocationError(
+                    f"tool is not validated: {tool_id}@{version}",
+                    code="tool_not_validated",
+                )
+            return tool
         except ToolInvocationError as exc:
             raise FactoryDependencyError(f"tool is unavailable: {tool_id}@{version}") from exc
 
-    def _resolve_policy(self, policy_id: str, version: str) -> PolicyDefinition:
+    def _resolve_policy(
+        self,
+        policy_id: str,
+        version: str,
+        *,
+        require_active: bool,
+    ) -> PolicyDefinition:
+        allowed_lifecycles = (
+            {AgentLifecycleStatus.ACTIVE}
+            if require_active
+            else {AgentLifecycleStatus.VALIDATED, AgentLifecycleStatus.ACTIVE}
+        )
         for policy in self.agent_registry.policies:
             if policy.policy_id == policy_id and policy.version == version:
-                if policy.lifecycle != AgentLifecycleStatus.ACTIVE:
-                    raise FactoryDependencyError(f"policy is not active: {policy_id}@{version}")
+                if policy.lifecycle not in allowed_lifecycles:
+                    raise FactoryDependencyError(f"policy is not usable: {policy_id}@{version}")
                 return policy
         raise FactoryDependencyError(f"policy is unavailable: {policy_id}@{version}")
 
@@ -524,6 +689,16 @@ class AgentFactory:
             },
         )
 
+    def _runtime_execution_guard(self, agent_id: str, agent_version: str) -> None:
+        """Reject new and resumed work when live registry authority is stale."""
+
+        try:
+            self.agent_registry.resolve(agent_id, agent_version)
+        except RegistryError as exc:
+            raise RuntimeAuthorizationError(
+                f"agent or dependency is not active: {agent_id}@{agent_version}"
+            ) from exc
+
     @staticmethod
     def _validate_template(
         config: AgentConfig,
@@ -540,17 +715,60 @@ class AgentFactory:
         if template == AgentTemplate.ACTION_AGENT and not non_read_tools:
             raise FactoryTemplateError("action_agent requires a write or action tool")
         if template == AgentTemplate.APPROVAL_GATED_OPERATOR:
-            policy_requires_approval = any(
-                rule.requires_approval is True for policy in policies for rule in policy.rules
-            )
-            if not non_read_tools or not (
-                config.approval_requirements
-                or policy_requires_approval
-                or any(tool.requires_approval for tool in tools)
-            ):
-                raise FactoryTemplateError(
-                    "approval_gated_operator requires a side-effecting tool and approval control"
+            if not non_read_tools:
+                raise FactoryTemplateError("approval_gated_operator requires a side-effecting tool")
+            unprotected = [
+                tool
+                for tool in non_read_tools
+                if not tool.requires_approval
+                and not any(
+                    AgentFactory._approval_rule_covers_tool(
+                        config=config,
+                        tool=tool,
+                        rule=rule,
+                    )
+                    for policy in policies
+                    for rule in policy.rules
                 )
+            ]
+            if unprotected:
+                references = ", ".join(f"{tool.tool_id}@{tool.version}" for tool in unprotected)
+                raise FactoryTemplateError(
+                    "approval_gated_operator requires an approval gate for every "
+                    f"side-effecting tool: {references}"
+                )
+
+    @staticmethod
+    def _approval_rule_covers_tool(
+        *,
+        config: AgentConfig,
+        tool: ToolDefinition,
+        rule: PolicyRule,
+    ) -> bool:
+        """Return whether a declarative allow rule gates this tool in every run."""
+
+        if rule.effect != PolicyEffect.ALLOW or rule.requires_approval is not True:
+            return False
+        if rule.tool_ids and tool.tool_id not in rule.tool_ids:
+            return False
+        if rule.agent_ids and config.identity.agent_id not in rule.agent_ids:
+            return False
+        if rule.risk_levels and tool.risk_level not in rule.risk_levels:
+            return False
+
+        # These dimensions are supplied by the caller, provider, or resource
+        # context at execution time. A constrained rule cannot prove that the
+        # tool is gated for every possible invocation.
+        return not any(
+            (
+                rule.principal_ids,
+                rule.tenant_ids,
+                rule.required_permissions,
+                rule.environments,
+                rule.resource_types,
+                rule.resource_ids,
+            )
+        )
 
     def _manifest(
         self,
@@ -563,22 +781,21 @@ class AgentFactory:
         runtime_profile: RuntimeProfile | None,
         runtime_limits: RuntimeConfig,
     ) -> ResolvedAgentManifest:
-        digest_payload = {
-            "agent": definition.model_dump(mode="json"),
-            "capabilities": [item.model_dump(mode="json") for item in capabilities],
-            "tools": [item.model_dump(mode="json") for item in tools],
-            "policies": [item.model_dump(mode="json") for item in policies],
-            "provider_profile": config.provider_profile.model_dump(mode="json"),
-            "runtime_profile": (
-                runtime_profile.model_dump(mode="json") if runtime_profile is not None else None
-            ),
-            "runtime_limits": runtime_limits.model_dump(mode="json"),
-            "template": config.template.value if config.template is not None else None,
-        }
-        encoded = json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        digest = hashlib.sha256(encoded).hexdigest()
+        manifest_id = f"{definition.agent_id}@{definition.version}"
+        digest = _calculate_manifest_digest(
+            manifest_id=manifest_id,
+            source=config,
+            agent=definition,
+            capabilities=capabilities,
+            tools=tools,
+            policies=policies,
+            provider_profile=config.provider_profile,
+            runtime_profile=runtime_profile,
+            runtime_limits=runtime_limits,
+            template=config.template,
+        )
         return ResolvedAgentManifest(
-            manifest_id=f"{definition.agent_id}@{definition.version}",
+            manifest_id=manifest_id,
             manifest_digest=digest,
             source=config.model_copy(deep=True),
             agent=definition.model_copy(deep=True),
@@ -604,6 +821,73 @@ class AgentFactory:
             return AgentConfig.model_validate(config)
         except ValidationError as exc:
             raise FactoryValidationError(str(exc)) from exc
+
+
+def _manifest_authority(
+    *,
+    manifest: ResolvedAgentManifest,
+    definition: AgentDefinition,
+    tools: Sequence[ToolDefinition],
+    runtime_limits: RuntimeConfig,
+) -> _ManifestAuthority:
+    """Capture only immutable authority data needed after a factory build."""
+
+    return _ManifestAuthority(
+        manifest_digest=manifest.manifest_digest,
+        agent_id=definition.agent_id,
+        agent_version=definition.version,
+        allowed_tool_ids=tuple(
+            dict.fromkeys(reference.component_id for reference in definition.allowed_tools)
+        ),
+        allowed_tool_versions=tuple(
+            f"{reference.component_id}@{reference.version}"
+            for reference in definition.allowed_tools
+        ),
+        tool_permissions=tuple(
+            sorted(
+                (
+                    f"{tool.tool_id}@{tool.version}",
+                    tuple(tool.required_permissions),
+                )
+                for tool in tools
+            )
+        ),
+        risk_level=definition.risk_level,
+        max_plan_steps=runtime_limits.max_plan_steps,
+    )
+
+
+def _calculate_manifest_digest(
+    *,
+    manifest_id: str,
+    source: AgentConfig,
+    agent: AgentDefinition,
+    capabilities: Sequence[CapabilityDefinition],
+    tools: Sequence[ToolDescriptor],
+    policies: Sequence[PolicyDefinition],
+    provider_profile: ProviderProfile,
+    runtime_profile: RuntimeProfile | None,
+    runtime_limits: RuntimeConfig,
+    template: AgentTemplate | None,
+) -> str:
+    """Calculate the digest over every resolved manifest authority field."""
+
+    digest_payload = {
+        "manifest_id": manifest_id,
+        "source": source.model_dump(mode="json"),
+        "agent": agent.model_dump(mode="json"),
+        "capabilities": [item.model_dump(mode="json") for item in capabilities],
+        "tools": [item.model_dump(mode="json") for item in tools],
+        "policies": [item.model_dump(mode="json") for item in policies],
+        "provider_profile": provider_profile.model_dump(mode="json"),
+        "runtime_profile": (
+            runtime_profile.model_dump(mode="json") if runtime_profile is not None else None
+        ),
+        "runtime_limits": runtime_limits.model_dump(mode="json"),
+        "template": template.value if template is not None else None,
+    }
+    encoded = json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _risk_exceeds(actual: RiskLevel, maximum: RiskLevel) -> bool:

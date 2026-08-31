@@ -10,8 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from threading import RLock
 from typing import Any
+from uuid import uuid4
 
 from ..contracts import (
     AgentLifecycleStatus,
@@ -23,11 +25,46 @@ from ..contracts import (
     ToolResultStatus,
 )
 from ..errors import ExecutionCancelledError, ExecutionTimeoutError
+from ..registry_audit import ListRegistryAuditSink, RegistryAuditEvent, RegistryAuditSink
 from .definitions import ToolDefinition, ToolInvocationError
 
 ToolTraceCallback = Callable[[str, dict[str, str]], None]
 CancellationCheck = Callable[[], bool]
 RetryAdmission = Callable[[], bool]
+
+
+_TOOL_LIFECYCLE_TRANSITIONS: dict[AgentLifecycleStatus, frozenset[AgentLifecycleStatus]] = {
+    AgentLifecycleStatus.DRAFT: frozenset(
+        {AgentLifecycleStatus.DRAFT, AgentLifecycleStatus.ACTIVE, AgentLifecycleStatus.RETIRED}
+    ),
+    AgentLifecycleStatus.VALIDATED: frozenset(
+        {
+            AgentLifecycleStatus.VALIDATED,
+            AgentLifecycleStatus.ACTIVE,
+            AgentLifecycleStatus.RETIRED,
+        }
+    ),
+    AgentLifecycleStatus.ACTIVE: frozenset(
+        {
+            AgentLifecycleStatus.ACTIVE,
+            AgentLifecycleStatus.SUSPENDED,
+            AgentLifecycleStatus.DEPRECATED,
+            AgentLifecycleStatus.RETIRED,
+        }
+    ),
+    AgentLifecycleStatus.SUSPENDED: frozenset(
+        {
+            AgentLifecycleStatus.SUSPENDED,
+            AgentLifecycleStatus.ACTIVE,
+            AgentLifecycleStatus.DEPRECATED,
+            AgentLifecycleStatus.RETIRED,
+        }
+    ),
+    AgentLifecycleStatus.DEPRECATED: frozenset(
+        {AgentLifecycleStatus.DEPRECATED, AgentLifecycleStatus.RETIRED}
+    ),
+    AgentLifecycleStatus.RETIRED: frozenset({AgentLifecycleStatus.RETIRED}),
+}
 
 
 @dataclass(frozen=True)
@@ -46,31 +83,61 @@ class ToolRegistry:
     one consistent path.
     """
 
-    def __init__(self, tools: Iterable[ToolDefinition] = ()) -> None:
+    registry_id = "tools"
+
+    def __init__(
+        self,
+        tools: Iterable[ToolDefinition] = (),
+        *,
+        audit_sink: RegistryAuditSink | None = None,
+        id_factory: Callable[[str], str] | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._tools: dict[tuple[str, str], ToolDefinition] = {}
         self._idempotency: dict[tuple[str, str, str, str, str], _IdempotencyEntry] = {}
         self._execution_records: list[ToolExecutionRecord] = []
+        self.audit_sink = audit_sink or ListRegistryAuditSink()
+        self._id = id_factory or (lambda prefix: f"{prefix}_{uuid4().hex[:10]}")
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._events: list[RegistryAuditEvent] = []
+        self._revision = 0
         self._lock = RLock()
         for tool in tools:
             self.register(tool)
 
     def register(self, tool: ToolDefinition, *, replace_existing: bool = False) -> ToolDefinition:
-        """Register one versioned tool and reject accidental replacement."""
+        """Register one exact tool version as an immutable registry record."""
 
         key = (tool.tool_id, tool.version)
+        candidate = _copy_tool(tool)
         with self._lock:
-            if key in self._tools and not replace_existing:
+            if key in self._tools:
+                if replace_existing:
+                    raise ValueError("registered tool versions are immutable")
                 raise ValueError("tool identity and version pairs must be unique")
-            self._tools[key] = tool
-        return tool
+            self._tools[key] = candidate
+            self._changed(
+                operation="registered",
+                component_kind="tool",
+                component_id=candidate.tool_id,
+                version=candidate.version,
+                to_status=candidate.lifecycle,
+            )
+            return _copy_tool(candidate)
 
     def resolve(self, tool_id: str, version: str | None = None) -> ToolDefinition:
         """Resolve an active tool by identity and optional exact version."""
 
         return self.get(tool_id, version)
 
-    def get(self, tool_id: str, version: str | None = None) -> ToolDefinition:
-        """Resolve an active tool or raise a stable invocation error."""
+    def get(
+        self,
+        tool_id: str,
+        version: str | None = None,
+        *,
+        include_inactive: bool = False,
+    ) -> ToolDefinition:
+        """Resolve a tool, optionally including an inactive exact version."""
 
         with self._lock:
             candidates = [
@@ -84,10 +151,20 @@ class ToolRegistry:
                         f"unknown tool version: {tool_id}@{version}",
                         code="unknown_tool",
                     ) from exc
-                self._assert_active(tool)
-                return tool
+                if not include_inactive:
+                    self._assert_active(tool)
+                return _copy_tool(tool)
 
             active = [tool for tool in candidates if tool.lifecycle == AgentLifecycleStatus.ACTIVE]
+            if include_inactive:
+                if not candidates:
+                    raise ToolInvocationError(f"unknown tool: {tool_id}", code="unknown_tool")
+                if len(candidates) > 1:
+                    raise ToolInvocationError(
+                        f"tool version is required: {tool_id}",
+                        code="tool_version_required",
+                    )
+                return _copy_tool(candidates[0])
             if not active:
                 if candidates:
                     self._assert_active(candidates[0])
@@ -97,7 +174,7 @@ class ToolRegistry:
                     f"tool version is required: {tool_id}",
                     code="tool_version_required",
                 )
-            return active[0]
+            return _copy_tool(active[0])
 
     def version(self, tool_id: str, version: str | None = None) -> ToolDefinition:
         """Resolve one exact or unambiguous active tool version."""
@@ -115,7 +192,10 @@ class ToolRegistry:
             values = list(self._tools.values())
         if not include_inactive:
             values = [tool for tool in values if tool.lifecycle == AgentLifecycleStatus.ACTIVE]
-        return sorted(values, key=lambda item: (item.tool_id, item.version))
+        return [
+            _copy_tool(tool)
+            for tool in sorted(values, key=lambda item: (item.tool_id, item.version))
+        ]
 
     def deprecate(self, tool_id: str, version: str) -> ToolDefinition:
         """Mark an exact version deprecated so new calls cannot resolve it."""
@@ -339,6 +419,20 @@ class ToolRegistry:
 
         with self._lock:
             return deepcopy(self._execution_records)
+
+    @property
+    def revision(self) -> int:
+        """Return the monotonic revision of visible tool registry changes."""
+
+        with self._lock:
+            return self._revision
+
+    @property
+    def events(self) -> builtins.list[RegistryAuditEvent]:
+        """Return tool registry events without exposing internal storage."""
+
+        with self._lock:
+            return deepcopy(self._events)
 
     def clear_idempotency(self) -> None:
         """Clear local idempotency records for test or process lifecycle use."""
@@ -642,12 +736,55 @@ class ToolRegistry:
                 ) from exc
             if current.lifecycle == AgentLifecycleStatus.RETIRED and lifecycle != current.lifecycle:
                 raise ToolInvocationError(
-                    f"tool is retired: {tool_id}@{version}",
-                    code="tool_retired",
+                    f"cannot move tool from {current.lifecycle.value} to {lifecycle.value}",
+                    code="invalid_lifecycle_transition",
                 )
+            allowed_targets = _TOOL_LIFECYCLE_TRANSITIONS[current.lifecycle]
+            if lifecycle not in allowed_targets:
+                raise ToolInvocationError(
+                    f"cannot move tool from {current.lifecycle.value} to {lifecycle.value}",
+                    code="invalid_lifecycle_transition",
+                )
+            if lifecycle == current.lifecycle:
+                return _copy_tool(current)
             updated = replace(current, lifecycle=lifecycle)
             self._tools[(tool_id, version)] = updated
-            return updated
+            self._changed(
+                operation=_tool_lifecycle_operation(current.lifecycle, lifecycle),
+                component_kind="tool",
+                component_id=tool_id,
+                version=version,
+                from_status=current.lifecycle,
+                to_status=lifecycle,
+            )
+            return _copy_tool(updated)
+
+    def _changed(
+        self,
+        *,
+        operation: str,
+        component_kind: str,
+        component_id: str,
+        version: str,
+        from_status: AgentLifecycleStatus | None = None,
+        to_status: AgentLifecycleStatus | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
+        self._revision += 1
+        event = RegistryAuditEvent(
+            event_id=self._id("registry_event"),
+            registry_id=self.registry_id,
+            operation=operation,
+            component_kind=component_kind,
+            component_id=component_id,
+            version=version,
+            from_status=from_status,
+            to_status=to_status,
+            occurred_at=self._clock(),
+            metadata=metadata or {},
+        )
+        self._events.append(event)
+        self.audit_sink.append(event)
 
     @staticmethod
     def _assert_active(tool: ToolDefinition) -> None:
@@ -830,6 +967,21 @@ def _metadata_int(metadata: dict[str, str], key: str, *, default: int = 0) -> in
     except (TypeError, ValueError):
         return default
     return max(0, value)
+
+
+def _tool_lifecycle_operation(
+    current: AgentLifecycleStatus,
+    target: AgentLifecycleStatus,
+) -> str:
+    if target == AgentLifecycleStatus.ACTIVE:
+        return "reactivated" if current == AgentLifecycleStatus.SUSPENDED else "activated"
+    return str(target.value)
+
+
+def _copy_tool(tool: ToolDefinition) -> ToolDefinition:
+    """Copy the immutable definition fields without cloning its handler object."""
+
+    return replace(tool)
 
 
 __all__ = ["CancellationCheck", "RetryAdmission", "ToolRegistry", "ToolTraceCallback"]

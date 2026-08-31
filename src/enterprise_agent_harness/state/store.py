@@ -105,8 +105,10 @@ class InMemoryStateStore:
         with self._lock:
             existing = self._states.get(key)
             if existing is None:
-                if state.version != 0 and expected_version not in {None, 0}:
+                if state.version != 0:
                     raise StateConflictError("new state must start at version zero")
+                if expected_version not in {None, 0}:
+                    raise StateConflictError("new state expected version must be zero or unset")
             else:
                 self._assert_same_owner(existing, state)
                 if expected_version is not None and existing.version != expected_version:
@@ -252,8 +254,10 @@ class SQLiteStateStore:
             try:
                 row = self._select_key(key)
                 if row is None:
-                    if state.version != 0 and expected_version not in {None, 0}:
+                    if state.version != 0:
                         raise StateConflictError("new state must start at version zero")
+                    if expected_version not in {None, 0}:
+                        raise StateConflictError("new state expected version must be zero or unset")
                     self._insert(state)
                 else:
                     existing = self._row_to_state(row)

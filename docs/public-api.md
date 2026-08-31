@@ -1,6 +1,6 @@
 # Public API baseline
 
-Status: accepted baseline for Phase 10.
+Status: accepted baseline through Phase 14.
 
 This document defines the smallest API that later phases must preserve. The
 root package may re-export additional compatibility names during the 0.x
@@ -40,8 +40,8 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.AgentOutcome` | Runtime-owned final outcome. |
 | `enterprise_agent_harness.ExecutionCheckpoint` | Versioned, owner-bound continuation data for a paused execution. |
 | `enterprise_agent_harness.RegistryDependency` | Exact dependency edge in a registry snapshot. |
-| `enterprise_agent_harness.RegistrySnapshot` | Versioned, deterministic view of agent, capability, tool, policy, and dependency records. |
-| `enterprise_agent_harness.ResolvedAgentManifest` | Immutable resolved factory snapshot containing exact agent dependencies and runtime options. |
+| `enterprise_agent_harness.RegistrySnapshot` | Versioned, deterministic view of agent, capability, tool, policy, and dependency records, including the tool registry revision. |
+| `enterprise_agent_harness.ResolvedAgentManifest` | Tamper-evident resolved factory snapshot containing exact agent dependencies and runtime options. |
 | `enterprise_agent_harness.RuntimeProfile` | Reusable versioned runtime-limit profile. |
 | `enterprise_agent_harness.DelegationRequest` / `DelegationResult` | Exact parent-authorized child invocation and auditable result. |
 | `enterprise_agent_harness.DelegatedExecutionContext` | Child authority, identity, budget, depth, path, and correlation snapshot. |
@@ -52,6 +52,9 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.OutcomeStatus` | Standard final outcome state. |
 | `enterprise_agent_harness.ToolResultStatus` | Standard one-tool result state. |
 | `enterprise_agent_harness.ToolExecutionRecord` | Redacted execution summary for one registry-managed handler call. |
+| `enterprise_agent_harness.ExecutionMetrics` | Structured, attributable usage and cost evidence for one execution. |
+| `enterprise_agent_harness.ProviderUsageMetric` | Per-provider/model usage and cost for one execution. |
+| `enterprise_agent_harness.ToolUsageMetric` | Per-tool usage for one execution. |
 
 `AgentDefinition` includes supported intents and languages, owner and
 lifecycle metadata, exact capability/tool/policy references, risk level, and
@@ -64,6 +67,7 @@ identity and version; a correction is registered as a new version.
 | --- | --- |
 | `enterprise_agent_harness.AgentRuntime` | Execute one bounded governed run. |
 | `enterprise_agent_harness.AgentRuntime.resume` | Resume one paused execution after exact approval evidence. |
+| `enterprise_agent_harness.AgentRuntime.execute_event` | Execute one governed event through the normal runtime path. |
 | `enterprise_agent_harness.CancellationToken` | Request cooperative cancellation of a synchronous run. |
 | `enterprise_agent_harness.ContextCompiler` | Compile trust-labelled provider context. |
 | `enterprise_agent_harness.ProviderAdapter` | Provider-neutral proposal boundary. |
@@ -75,7 +79,7 @@ identity and version; a correction is registered as a new version.
 | `enterprise_agent_harness.normalize_tool_calls` | Normalize provider tool-call shapes into `PlanStep` values. |
 | `enterprise_agent_harness.DefaultProviderCallPolicy` | Finite-timeout, no-retry default provider policy. |
 | `enterprise_agent_harness.AgentFactory` | Validate declarative config, resolve exact dependencies, register/activate agents, and construct governed runtimes. |
-| `enterprise_agent_harness.BuiltAgent` | Resolved manifest plus an optional activated runtime; execution cannot exceed the manifest. |
+| `enterprise_agent_harness.BuiltAgent` | Tamper-evident resolved manifest plus an optional activated runtime; execution uses a private build-time authority snapshot. |
 | `enterprise_agent_harness.ProviderRegistry` | Exact provider adapter registration and resolution. |
 | `enterprise_agent_harness.RuntimeProfileRegistry` | Exact reusable runtime-profile registration and resolution. |
 | `enterprise_agent_harness.AgentComposer` | Runtime-only delegation and router/supervisor/specialist/sequential composition. |
@@ -85,7 +89,7 @@ identity and version; a correction is registered as a new version.
 | Import | Purpose |
 | --- | --- |
 | `enterprise_agent_harness.ToolDefinition` | Application-owned typed tool boundary. |
-| `enterprise_agent_harness.ToolRegistry` | Versioned registration, lifecycle, resolution, and guarded execution. |
+| `enterprise_agent_harness.ToolRegistry` | Immutable exact-version registration, audited lifecycle and revision tracking, resolution, and guarded execution. |
 | `enterprise_agent_harness.ToolRetryPolicy` | Explicit retry settings for a tool handler. |
 | `enterprise_agent_harness.ToolInvocationError` | Safe tool-boundary failure. |
 | `enterprise_agent_harness.PermissionBroker` | Permission decision boundary. |
@@ -114,21 +118,42 @@ identity and version; a correction is registered as a new version.
 | `enterprise_agent_harness.RegistryLifecycleError` | A requested lifecycle transition is not allowed. |
 
 Registry queries return deep copies and therefore cannot mutate registered
-definitions. Activation checks exact dependency versions, active lifecycle
-states, and risk ceilings. `snapshot()` returns stable ordering and exact
-dependency edges for deterministic planning; its ID, timestamp, and revision
-are retained as audit evidence.
+definitions. Exact tool versions cannot be replaced. Activation checks exact
+dependency versions, active lifecycle states, and risk ceilings. A deprecated
+tool cannot be activated again, and a retired tool is terminal. `snapshot()`
+returns stable ordering and exact dependency edges for deterministic planning;
+its ID, timestamp, combined revision, and tool registry revision are retained
+as audit evidence.
+
+An active agent can resolve only while its exact agent, capability, tool, and
+policy dependencies are active. A validated agent may reference validated or
+active dependencies. Active agent resolution repeats the dependency checks, so
+later suspension takes effect for previously built runtimes.
 
 `AgentFactory.validate()` is read-only. `build(..., dry_run=True)` resolves and
 returns a manifest without registering or constructing a runtime. An active
 build registers the exact definition and creates `BuiltAgent`; standard
-templates reject incompatible authority shapes. `BuiltAgent.execute()` pins
-the agent identity, tool IDs, exact tool versions, and risk ceiling to its
-manifest.
+templates reject incompatible authority shapes. An approval-gated operator must
+have an executable approval gate on every write or action tool: either the tool
+sets `requires_approval=True` or a matching active allow policy rule requires
+approval. `approval_requirements` metadata alone is insufficient. Without an
+approval service, the runtime returns `escalated` and does not call the
+handler.
+
+`BuiltAgent.execute()` checks the manifest digest before provider execution,
+then uses the private build-time authority snapshot for agent identity, tool
+IDs, exact tool versions, and risk ceiling. A modified nested manifest fails
+closed. A factory-created runtime is bound to the exact built agent ID and
+version and checks the live registry before every new execution and resume;
+using `BuiltAgent.runtime` directly does not bypass that guard. Suspending the
+agent or an exact dependency therefore stops the next operation.
+
+`BuiltAgent.trace_for(execution_id)` returns completed trace evidence without
+exposing private runtime data.
 
 `AgentComposer.delegate()` requires an active factory-built child. It
 intersects parent tool IDs and exact `tool_id@version` authority with the
-child manifest, intersects requested permissions with parent grants, rejects
+child's trusted build-time authority, intersects requested permissions with parent grants, rejects
 child risk above the parent ceiling, and bounds steps by both runtimes. It
 passes the child through `AgentRuntime`; it never calls a handler or provider
 directly. Child traces and audits retain the parent correlation ID and record
@@ -170,6 +195,7 @@ grants authority to another tool or argument set.
 | `enterprise_agent_harness.ProviderError` | Provider call failure. |
 | `enterprise_agent_harness.ProviderTimeoutError` | Provider call timeout with a retry hint. |
 | `enterprise_agent_harness.ExecutionTimeoutError` / `ExecutionCancelledError` | Whole-execution timeout or cancellation categories. |
+| `enterprise_agent_harness.RuntimeAuthorizationError` | A factory-created runtime is not authorized for its exact agent identity or current registry state. |
 | `enterprise_agent_harness.FactoryError` and subclasses | Declarative factory validation, dependency, template, or manifest-authority failure. |
 | `enterprise_agent_harness.DelegationError` and subclasses | Safe delegation or composition failure, including authority, cycle, and depth violations. |
 
@@ -192,9 +218,36 @@ durable-execution path.
 | `enterprise_agent_harness.memory.BoundedMemory` | Bounded local memory strategy. |
 | `enterprise_agent_harness.observability.AuditSink` | Audit-event storage boundary. |
 | `enterprise_agent_harness.observability.ListAuditSink` | Deterministic audit sink. |
+| `enterprise_agent_harness.observability.ObservabilityFailureReporter` | Safe failure-reporting boundary for audit and trace sinks. |
+| `enterprise_agent_harness.observability.ListObservabilityFailureReporter` | Deterministic in-memory observability failure reporter. |
 | `enterprise_agent_harness.observability.TraceSink` | Trace-event storage boundary. |
 | `enterprise_agent_harness.observability.ListTraceSink` | Deterministic trace sink. |
 | `enterprise_agent_harness.observability.TraceRecorder` | Redacted trace recorder. |
+| `enterprise_agent_harness.observability.CostModel` | Provider usage pricing boundary. |
+| `enterprise_agent_harness.observability.StaticTokenCostModel` | Deterministic per-1k-token cost model. |
+| `enterprise_agent_harness.observability.Redactor` | Exported metadata redaction boundary. |
+| `enterprise_agent_harness.observability.DefaultRedactor` | Sensitive-key and value-length redaction. |
+
+## Event-driven and background layer
+
+| Import | Purpose |
+| --- | --- |
+| `enterprise_agent_harness.EventEnvelope` | One delivered event with stable identity and correlation data. |
+| `enterprise_agent_harness.EventTrigger` | Routing metadata for an event type and source. |
+| `enterprise_agent_harness.EventDisposition` | Terminal result of one background event. |
+| `enterprise_agent_harness.FailureCategory` | Classification of a failed background attempt. |
+| `enterprise_agent_harness.BackgroundJobRunner` | Dedup, lease, bounded retry, cancellation, and dead-letter coordination. |
+| `enterprise_agent_harness.BackgroundJobRunner.resolve_pending` | Commit an approval-resumed result without re-running the event. |
+| `enterprise_agent_harness.JobHandler` | Application boundary that executes one governed event attempt. |
+| `enterprise_agent_harness.JobResult` | Structured terminal result of one background event. |
+| `enterprise_agent_harness.BackgroundRetryPolicy` | Bounded retry policy for background handling. |
+| `enterprise_agent_harness.LeaseStore` / `InMemoryLeaseStore` | Event-handling lease boundary and deterministic store. |
+| `enterprise_agent_harness.Lease` | A time-bounded ownership record. |
+| `enterprise_agent_harness.LeaseConflictError` / `LeaseExpiredError` | Lease boundary errors. |
+| `enterprise_agent_harness.DeduplicationStore` / `InMemoryDeduplicationStore` | Event deduplication boundary and deterministic store. |
+| `enterprise_agent_harness.DedupRecord` | One deduplication record for an event key. |
+| `enterprise_agent_harness.DeadLetterSink` / `ListDeadLetterSink` | Dead-letter storage boundary and deterministic sink. |
+| `enterprise_agent_harness.DeadLetterRecord` | Evidence for a terminal background failure. |
 
 ## Trace and replay layer
 
@@ -203,6 +256,15 @@ durable-execution path.
 | `enterprise_agent_harness.RunTrace` | Exported run evidence. |
 | `enterprise_agent_harness.TraceEvent` | One stable trace event. |
 | `enterprise_agent_harness.ReplayRequest` | Replay input contract. |
+| `enterprise_agent_harness.export_run_trace` | JSON-safe export of `RunTrace`. |
+| `enterprise_agent_harness.export_agent_manifest` | JSON-safe export of `ResolvedAgentManifest`. |
+| `enterprise_agent_harness.EvaluationExecutionInput` | Valid harness input from one external test case. |
+| `enterprise_agent_harness.TestCaseAdapter` | External test-case to harness-input adapter protocol. |
+| `enterprise_agent_harness.EvaluationSubject` | Baseline or candidate identity from an exact manifest. |
+| `enterprise_agent_harness.EvaluationEvidence` | JSON-safe trace and manifest evidence for an external evaluator. |
+| `enterprise_agent_harness.MetricHook` / `HardGateHook` | External metric and pass/fail policy protocols. |
+| `enterprise_agent_harness.execute_test_case` | Run one adapted case through a factory-built agent. |
+| `enterprise_agent_harness.RecordedReplayAdapter` | Offline recorded-evidence reconstruction. |
 
 `RunTrace.provider_calls` contains normalized provider metadata for each
 successful provider operation. `RunTrace.policy_decisions` contains explicit
@@ -213,6 +275,23 @@ response content, idempotency keys, or tool output.
 `RunTrace` also exposes `correlation_id`, `parent_execution_id`,
 `delegation_id`, `delegation_depth`, and `delegation_path` for reconstructing a
 composed execution tree.
+
+`export_run_trace` and `export_agent_manifest` return JSON-safe dictionaries.
+Their source contracts have explicit schema versions. The manifest export keeps
+the resolved agent, component, tool, policy, profile, and digest identities.
+
+An external test system implements `TestCaseAdapter`. It returns an
+`EvaluationExecutionInput`. `execute_test_case` then runs a `BuiltAgent` and
+returns `EvaluationEvidence`. The external system owns `MetricHook`,
+`HardGateHook`, thresholds, comparisons, and promotion decisions.
+
+Use `EvaluationSubject.from_manifest(..., role="baseline" | "candidate")` to
+identify compared builds. The manifest ID and digest distinguish exact builds.
+
+`RecordedReplayAdapter` only validates and reconstructs exported trace data. It
+does not invoke providers, tools, handlers, approvals, or state stores. It can
+replay recorded evidence, but it cannot prove that a new live execution will
+produce the same result.
 
 `ExecutionCheckpoint` is stored in the workflow state's `data` by the runtime
 when an approval-gated execution pauses. It contains the exact execution
@@ -233,6 +312,8 @@ durable broker or pass independently persisted, exact approval evidence.
 - Provider adapters may propose data. They cannot call handlers or change
   authority.
 - Exported trace and replay contracts carry an explicit schema version.
+- External evaluation is optional. Normal runtime execution needs no evaluation
+  package or evaluation configuration.
 - Private helpers, concrete provider SDK objects, and sink storage details are
   not part of this baseline.
 - A breaking change requires a new component or contract version, as defined

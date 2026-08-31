@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from inspect import Parameter, signature
 from threading import RLock
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
+from ..background.events import EventEnvelope, EventTrigger
 from ..capabilities import CapabilityDefinition
 from ..contracts import (
     ActionProposal,
@@ -46,11 +47,13 @@ from ..contracts import (
     VerificationResult,
 )
 from ..errors import (
+    BudgetExhaustedError,
     ExecutionCancelledError,
     ExecutionTimeoutError,
     HarnessError,
     ProviderOutputError,
     ProviderTimeoutError,
+    RuntimeAuthorizationError,
 )
 from ..evaluation.contracts import RunTrace, TraceEvent
 from ..governance.approvals import (
@@ -61,6 +64,12 @@ from ..governance.permissions import DefaultPermissionBroker, PermissionBroker
 from ..governance.safety import SafetyDecision, SafetyPolicy, indirect_injection_matches
 from ..memory.strategies import MemoryStrategy
 from ..observability.audit import AuditLogger, AuditSink, ListAuditSink
+from ..observability.failures import (
+    ListObservabilityFailureReporter,
+    ObservabilityFailureReporter,
+)
+from ..observability.metrics import CostModel, aggregate_metrics
+from ..observability.redaction import Redactor
 from ..observability.tracing import ListTraceSink, TraceRecorder, TraceSink, digest_mapping
 from ..providers.base import ProviderAdapter
 from ..providers.contracts import (
@@ -70,6 +79,7 @@ from ..providers.contracts import (
     InterpretationResponse,
     PlanningRequest,
     PlanningResponse,
+    ProviderCallMetadata,
     ProviderOperation,
 )
 from ..providers.invocation import (
@@ -191,7 +201,15 @@ class AgentRuntime:
         provider_call_policy: ProviderCallPolicy | None = None,
         id_factory: Callable[[str], str] | None = None,
         clock: Callable[[], datetime] | None = None,
+        execution_guard: Callable[[str, str], object] | None = None,
+        bound_agent_id: str | None = None,
+        bound_agent_version: str | None = None,
+        cost_model: CostModel | None = None,
+        redactor: Redactor | None = None,
+        failure_reporter: ObservabilityFailureReporter | None = None,
     ) -> None:
+        if (bound_agent_id is None) != (bound_agent_version is None):
+            raise ValueError("bound_agent_id and bound_agent_version must be provided together")
         self.tools = tools
         self.provider = provider
         self.capabilities = tuple(capabilities)
@@ -221,19 +239,52 @@ class AgentRuntime:
         self.safety_policy = safety_policy or SafetyPolicy(self.config)
         self.trace_sink = trace_sink or ListTraceSink()
         self.audit_sink = audit_sink or ListAuditSink()
+        self.cost_model = cost_model
+        self.redactor = redactor
+        self.failure_reporter = failure_reporter or ListObservabilityFailureReporter()
         self._id = id_factory or (lambda prefix: f"{prefix}_{uuid4().hex[:10]}")
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._execution_guard = execution_guard
+        self._bound_agent_id = bound_agent_id
+        self._bound_agent_version = bound_agent_version
         self.audit_logger = AuditLogger(
             sink=self.audit_sink,
             id_factory=self._id,
             clock=self._clock,
+            redactor=redactor,
+            failure_reporter=self.failure_reporter,
         )
         self._traces: dict[str, RunTrace] = {}
         self._trace_lock = RLock()
         self._active: dict[str, _ActiveExecution] = {}
         self._active_lock = RLock()
         self._pending_approvals: dict[str, _PendingApproval] = {}
+        self._consumed_approval_requests: set[str] = set()
         self._pending_lock = RLock()
+
+    def _assert_execution_authority(self, agent_id: str, agent_version: str) -> None:
+        """Enforce an optional exact identity binding and live authority guard."""
+
+        if self._bound_agent_id is not None and (
+            agent_id != self._bound_agent_id or agent_version != self._bound_agent_version
+        ):
+            raise RuntimeAuthorizationError(
+                "runtime is bound to a different agent identity and version"
+            )
+        if self._execution_guard is None:
+            return
+        try:
+            result = self._execution_guard(agent_id, agent_version)
+        except RuntimeAuthorizationError:
+            raise
+        except Exception as exc:
+            raise RuntimeAuthorizationError(
+                f"agent authority is unavailable: {agent_id}@{agent_version}"
+            ) from exc
+        if result is False:
+            raise RuntimeAuthorizationError(
+                f"agent authority is unavailable: {agent_id}@{agent_version}"
+            )
 
     def execute(
         self,
@@ -256,6 +307,10 @@ class AgentRuntime:
         delegation_id: str | None = None,
         delegation_depth: int = 0,
         delegation_path: Sequence[str] = (),
+        event_id: str | None = None,
+        trigger_id: str | None = None,
+        causation_id: str | None = None,
+        attempt: int = 0,
         resource: ResourceContext | None = None,
         timeout_seconds: float | None = None,
         cancellation_event: CancellationSignal | None = None,
@@ -265,9 +320,11 @@ class AgentRuntime:
         _initial_tool_calls: Sequence[ToolCallRecord] = (),
         _initial_tool_results: Sequence[ToolResult] = (),
         _initial_highest_risk: RiskLevel = RiskLevel.LOW,
+        _allow_existing_execution: bool = False,
     ) -> AgentOutcome:
         """Execute one bounded run with cooperative timeout and cancellation."""
 
+        self._assert_execution_authority(agent_id, agent_version)
         if cancellation_event is not None and cancel_event is not None:
             raise ValueError("provide only one cancellation signal")
         if max_steps is not None and not 1 <= max_steps <= self.config.max_plan_steps:
@@ -280,6 +337,9 @@ class AgentRuntime:
             ),
             max_retries=self.config.max_retries,
             cancellation_signal=cancellation_event or cancel_event,
+            max_total_tokens=self.config.max_total_tokens,
+            max_cost=self.config.max_cost,
+            max_tool_invocations=self.config.max_tool_invocations,
         )
         try:
             return self._execute(
@@ -301,6 +361,10 @@ class AgentRuntime:
                 delegation_id=delegation_id,
                 delegation_depth=delegation_depth,
                 delegation_path=delegation_path,
+                event_id=event_id,
+                trigger_id=trigger_id,
+                causation_id=causation_id,
+                attempt=attempt,
                 resource=resource,
                 control=control,
                 _plan_override=_plan_override,
@@ -308,8 +372,9 @@ class AgentRuntime:
                 _initial_tool_calls=_initial_tool_calls,
                 _initial_tool_results=_initial_tool_results,
                 _initial_highest_risk=_initial_highest_risk,
+                _allow_existing_execution=_allow_existing_execution,
             )
-        except (ExecutionTimeoutError, ExecutionCancelledError) as exc:
+        except (ExecutionTimeoutError, ExecutionCancelledError, BudgetExhaustedError) as exc:
             with self._active_lock:
                 active = self._active.get(control.execution_id or "")
                 if active is None:
@@ -319,6 +384,50 @@ class AgentRuntime:
             if control.execution_id is not None:
                 with self._active_lock:
                     self._active.pop(control.execution_id, None)
+
+    def execute_event(
+        self,
+        event: EventEnvelope,
+        *,
+        principal: PrincipalContext,
+        input_text: str | None = None,
+        input_extractor: Callable[[EventEnvelope], str] | None = None,
+        trigger: EventTrigger | None = None,
+        attempt: int = 0,
+        **execute_kwargs: Any,
+    ) -> AgentOutcome:
+        """Execute one governed event through the normal runtime path.
+
+        Event-derived correlation identities are forced and cannot be
+        overridden by ``execute_kwargs``. The event payload is never passed to
+        the provider as trusted input; only the resolved ``input_text`` is.
+        """
+
+        resolved_input = input_text
+        if resolved_input is None and input_extractor is not None:
+            resolved_input = input_extractor(event)
+        if resolved_input is None:
+            resolved_input = _default_event_input(event)
+        if not resolved_input or not resolved_input.strip():
+            raise ValueError("event input_text must not be empty")
+
+        trigger_id = trigger.trigger_id if trigger is not None else event.trigger_id
+        correlation_id = event.correlation_id or f"event:{event.event_id}"
+        execute_kwargs.pop("correlation_id", None)
+        execute_kwargs.pop("event_id", None)
+        execute_kwargs.pop("trigger_id", None)
+        execute_kwargs.pop("causation_id", None)
+        execute_kwargs.pop("attempt", None)
+        return self.execute(
+            principal,
+            resolved_input,
+            correlation_id=correlation_id,
+            event_id=event.event_id,
+            trigger_id=trigger_id,
+            causation_id=event.causation_id,
+            attempt=attempt,
+            **execute_kwargs,
+        )
 
     def approval_request_for(self, execution_id: str) -> ApprovalRequest | None:
         """Return the exact pending approval request for an execution."""
@@ -352,6 +461,10 @@ class AgentRuntime:
             raise KeyError(f"unknown or non-paused execution: {execution_id}")
         if principal is not None and pending.principal != principal:
             raise ValueError("resume principal does not own the execution")
+        self._assert_execution_authority(
+            pending.execution.agent_id,
+            pending.execution.agent_version,
+        )
 
         decision = approval_decision or approval
         if decision is None and self.approval_broker is not None:
@@ -439,17 +552,29 @@ class AgentRuntime:
                 delegation_id=pending.execution.delegation_id,
                 delegation_depth=pending.execution.delegation_depth,
                 delegation_path=pending.execution.delegation_path,
+                event_id=pending.execution.event_id,
+                trigger_id=pending.execution.trigger_id,
+                causation_id=pending.execution.causation_id,
+                attempt=pending.execution.attempt,
                 resource=pending.resource,
                 _plan_override=pending.resume_plan,
                 _composition_plan_override=pending.plan,
                 _initial_tool_calls=pending.tool_calls,
                 _initial_tool_results=pending.tool_results,
                 _initial_highest_risk=pending.highest_risk,
+                _allow_existing_execution=True,
             )
         except Exception:
             with self._pending_lock:
                 self._pending_approvals[execution_id] = pending
             raise
+        with self._pending_lock:
+            if pending.request.request_id in self._consumed_approval_requests:
+                raise ValueError("approval request has already been consumed")
+            self._consumed_approval_requests.add(pending.request.request_id)
+        consume = getattr(self.approval_broker, "consume", None)
+        if consume is not None:
+            consume(pending.request.request_id)
         return self._merge_resumed_trace(pending, outcome)
 
     def _execute(
@@ -473,6 +598,10 @@ class AgentRuntime:
         delegation_id: str | None = None,
         delegation_depth: int = 0,
         delegation_path: Sequence[str] = (),
+        event_id: str | None = None,
+        trigger_id: str | None = None,
+        causation_id: str | None = None,
+        attempt: int = 0,
         resource: ResourceContext | None = None,
         control: ExecutionControl,
         _plan_override: AgentPlan | None = None,
@@ -480,6 +609,7 @@ class AgentRuntime:
         _initial_tool_calls: Sequence[ToolCallRecord] = (),
         _initial_tool_results: Sequence[ToolResult] = (),
         _initial_highest_risk: RiskLevel = RiskLevel.LOW,
+        _allow_existing_execution: bool = False,
     ) -> AgentOutcome:
         """Execute one caller-supplied input through the bounded runtime."""
 
@@ -487,13 +617,19 @@ class AgentRuntime:
         if not text:
             raise ValueError("input_text must not be empty")
 
+        resolved_execution_id = execution_id or self._id("execution")
+        if not _allow_existing_execution:
+            with self._trace_lock:
+                if resolved_execution_id in self._traces:
+                    raise ValueError("execution ID cannot be reused")
+            if self.state_store.find_execution(principal, resolved_execution_id) is not None:
+                raise ValueError("execution ID cannot be reused")
         state = self.state_store.get_or_create(
             principal,
             agent_id=agent_id,
             agent_version=agent_version,
             state_id=state_id,
         )
-        resolved_execution_id = execution_id or self._id("execution")
         with self._pending_lock:
             if resolved_execution_id in self._pending_approvals:
                 raise ValueError("execution has a pending approval; call resume instead of execute")
@@ -516,6 +652,10 @@ class AgentRuntime:
             delegation_id=delegation_id,
             delegation_depth=delegation_depth,
             delegation_path=tuple(delegation_path),
+            event_id=event_id,
+            trigger_id=trigger_id,
+            causation_id=causation_id,
+            attempt=attempt,
         )
         trace = TraceRecorder(
             execution=execution,
@@ -523,6 +663,9 @@ class AgentRuntime:
             sink=self.trace_sink,
             id_factory=self._id,
             clock=self._clock,
+            redactor=self.redactor,
+            cost_model=self.cost_model,
+            failure_reporter=self.failure_reporter,
         )
         tool_calls: list[ToolCallRecord] = [
             call.model_copy(deep=True) for call in _initial_tool_calls
@@ -539,6 +682,14 @@ class AgentRuntime:
                 tool_calls=tool_calls,
             )
         execution_metadata = {"input_length": str(len(text))}
+        if execution.event_id is not None:
+            execution_metadata["event_id"] = execution.event_id
+        if execution.trigger_id is not None:
+            execution_metadata["trigger_id"] = execution.trigger_id
+        if execution.causation_id is not None:
+            execution_metadata["causation_id"] = execution.causation_id
+        if execution.attempt:
+            execution_metadata["attempt"] = str(execution.attempt)
         if execution.parent_execution_id is not None:
             execution_metadata.update(
                 {
@@ -638,6 +789,10 @@ class AgentRuntime:
                         operation=ProviderOperation.INTERPRET,
                         metadata=interpretation.metadata,
                     )
+                    self._record_provider_budget(
+                        control=control,
+                        metadata=interpretation.metadata,
+                    )
                     trace.record(
                         stage="interpretation",
                         event_type="provider_call_completed",
@@ -690,6 +845,10 @@ class AgentRuntime:
                 control.check()
                 trace.record_provider_call(
                     operation=ProviderOperation.PLAN,
+                    metadata=planning_response.metadata,
+                )
+                self._record_provider_budget(
+                    control=control,
                     metadata=planning_response.metadata,
                 )
                 plan = planning_response.plan
@@ -783,6 +942,7 @@ class AgentRuntime:
         highest_risk = _initial_highest_risk
         for step_index, step in enumerate(plan.steps, start=1):
             control.check()
+            control.record_tool_invocation()
             trace.record(
                 stage="execution",
                 event_type="step_started",
@@ -1380,6 +1540,10 @@ class AgentRuntime:
                 operation=ProviderOperation.COMPOSE,
                 metadata=composition_response.metadata,
             )
+            self._record_provider_budget(
+                control=control,
+                metadata=composition_response.metadata,
+            )
             proposal = composition_response.proposal
             trace.record(
                 stage="composition",
@@ -1460,6 +1624,30 @@ class AgentRuntime:
             policy=_ControlledProviderCallPolicy(self.provider_call_policy, control),
             cancellation_check=control.is_cancelled,
             deadline=control.deadline,
+        )
+
+    def _record_provider_budget(
+        self,
+        *,
+        control: ExecutionControl,
+        metadata: ProviderCallMetadata,
+    ) -> None:
+        """Record token and cost usage against the run budget."""
+
+        input_tokens = metadata.input_tokens or 0
+        output_tokens = metadata.output_tokens or 0
+        cost = 0.0
+        if self.cost_model is not None:
+            cost = self.cost_model.cost(
+                provider_id=metadata.provider_id,
+                model=metadata.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        control.record_provider_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
         )
 
     def _authorize(
@@ -1700,7 +1888,9 @@ class AgentRuntime:
         control: ExecutionControl | None = None,
         tool_calls: list[ToolCallRecord] | None = None,
     ) -> AgentOutcome:
-        if isinstance(error, (ExecutionTimeoutError, ExecutionCancelledError)):
+        if isinstance(
+            error, (ExecutionTimeoutError, ExecutionCancelledError, BudgetExhaustedError)
+        ):
             raise error
         error_code = _provider_error_code(error)
         flags = [SafetyFlag.PROVIDER_FAILURE]
@@ -1756,14 +1946,21 @@ class AgentRuntime:
         self,
         *,
         active: _ActiveExecution,
-        control_error: ExecutionTimeoutError | ExecutionCancelledError,
+        control_error: ExecutionTimeoutError | ExecutionCancelledError | BudgetExhaustedError,
     ) -> AgentOutcome:
         """Close an interrupted run with a deterministic terminal outcome."""
 
-        timed_out = isinstance(control_error, ExecutionTimeoutError)
-        status = OutcomeStatus.TIMED_OUT if timed_out else OutcomeStatus.CANCELLED
-        flag = SafetyFlag.EXECUTION_TIMEOUT if timed_out else SafetyFlag.EXECUTION_CANCELLED
-        event_type = "execution_timed_out" if timed_out else "execution_cancelled"
+        if isinstance(control_error, BudgetExhaustedError):
+            status = OutcomeStatus.FAILED
+            flag = SafetyFlag.BUDGET_EXHAUSTED
+            event_type = "budget_exhausted"
+            error_code = control_error.code.value
+        else:
+            timed_out = isinstance(control_error, ExecutionTimeoutError)
+            status = OutcomeStatus.TIMED_OUT if timed_out else OutcomeStatus.CANCELLED
+            flag = SafetyFlag.EXECUTION_TIMEOUT if timed_out else SafetyFlag.EXECUTION_CANCELLED
+            event_type = "execution_timed_out" if timed_out else "execution_cancelled"
+            error_code = control_error.code.value
         if active.current_step is not None and active.current_tool is not None:
             step = active.current_step
             tool = active.current_tool
@@ -1775,7 +1972,7 @@ class AgentRuntime:
                     tool_version=tool.version,
                     arguments=tool.redact_arguments(step.arguments),
                     result_status=ToolResultStatus.FAILED,
-                    permission_reason_code=control_error.code.value,
+                    permission_reason_code=error_code,
                 )
             )
             active.trace.record_tool_execution(
@@ -1785,7 +1982,7 @@ class AgentRuntime:
                     tool_version=tool.version,
                     status=ToolResultStatus.FAILED,
                     timeout_seconds=tool.timeout_seconds,
-                    error_code=control_error.code.value,
+                    error_code=error_code,
                 )
             )
             active.trace.record(
@@ -1796,9 +1993,7 @@ class AgentRuntime:
         active.trace.record(
             stage="runtime",
             event_type=event_type,
-            metadata={
-                "error_code": control_error.code.value,
-            },
+            metadata={"error_code": error_code},
         )
         self._audit(
             event_type=event_type,
@@ -1807,20 +2002,25 @@ class AgentRuntime:
             outcome_status=status,
             safety_flags=[flag],
             tool_ids=[call.tool_id for call in active.tool_calls],
-            metadata={"error_code": control_error.code.value},
+            metadata={"error_code": error_code},
+        )
+        summary = (
+            "The execution exceeded its configured time limit."
+            if status == OutcomeStatus.TIMED_OUT
+            else (
+                "The execution exceeded a configured execution budget."
+                if status == OutcomeStatus.FAILED
+                else "The execution was cancelled by its caller."
+            )
         )
         outcome = self._decision_outcome(
             execution=active.execution,
             status=status,
-            summary=(
-                "The execution exceeded its configured time limit."
-                if timed_out
-                else "The execution was cancelled by its caller."
-            ),
+            summary=summary,
             flags=[flag],
             tool_calls=active.tool_calls,
             recovery=RecoveryAction.ABORT,
-            error_code=control_error.code.value,
+            error_code=error_code,
         )
         return self._finish(
             principal=active.principal,
@@ -1922,7 +2122,7 @@ class AgentRuntime:
     ) -> tuple[ApprovalDecisionStatus | None, str | None]:
         """Validate request identity, digest, and approval lifetime."""
 
-        if decision.request_id is not None and decision.request_id != request.request_id:
+        if decision.request_id != request.request_id:
             return None, "approval_request_mismatch"
         if decision.action_digest != request.action_digest:
             return None, "approval_action_mismatch"
@@ -2035,7 +2235,10 @@ class AgentRuntime:
             sink=self.trace_sink,
             id_factory=self._id,
             clock=self._clock,
+            redactor=self.redactor,
+            cost_model=self.cost_model,
             initial_trace=initial_trace,
+            failure_reporter=self.failure_reporter,
         )
         pending = _PendingApproval(
             principal=principal,
@@ -2226,17 +2429,44 @@ class AgentRuntime:
         """Prepend a prior approval cycle to the current execution trace."""
 
         current = self.trace_for(outcome.execution_id)
+        if (
+            current.execution_id != previous.execution_id
+            or current.agent_id != previous.agent_id
+            or current.agent_version != previous.agent_version
+            or current.correlation_id != previous.correlation_id
+        ):
+            raise ValueError("resumed trace identity does not match prior trace")
         offset = len(previous.events)
         resumed_events = [
             event.model_copy(update={"sequence": event.sequence + offset})
             for event in current.events
         ]
+        provider_calls = [*previous.provider_calls, *current.provider_calls]
+        tool_executions = [*previous.tool_executions, *current.tool_executions]
+        prior_latency_ms = previous.metrics.execution_latency_ms if previous.metrics else 0.0
+        current_latency_ms = current.metrics.execution_latency_ms if current.metrics else 0.0
+        metrics = aggregate_metrics(
+            execution_id=current.execution_id,
+            correlation_id=current.correlation_id,
+            agent_id=current.agent_id,
+            agent_version=current.agent_version,
+            attempt=max(previous.attempt, current.attempt),
+            execution_latency_ms=prior_latency_ms + current_latency_ms,
+            provider_calls=provider_calls,
+            tool_executions=tool_executions,
+            cost_model=self.cost_model,
+        )
         merged = current.model_copy(
             update={
                 "events": [*previous.events, *resumed_events],
-                "provider_calls": [*previous.provider_calls, *current.provider_calls],
+                "provider_calls": provider_calls,
                 "policy_decisions": [*previous.policy_decisions, *current.policy_decisions],
-                "tool_executions": [*previous.tool_executions, *current.tool_executions],
+                "tool_executions": tool_executions,
+                "event_id": previous.event_id or current.event_id,
+                "trigger_id": previous.trigger_id or current.trigger_id,
+                "causation_id": previous.causation_id or current.causation_id,
+                "attempt": max(previous.attempt, current.attempt),
+                "metrics": metrics,
             }
         )
         with self._trace_lock:
@@ -2459,11 +2689,21 @@ class AgentRuntime:
             parent_execution_id=execution.parent_execution_id,
             delegation_id=execution.delegation_id,
             delegation_depth=execution.delegation_depth,
+            source_event_id=execution.event_id,
+            trigger_id=execution.trigger_id,
+            causation_id=execution.causation_id,
+            attempt=execution.attempt,
             outcome_status=outcome_status,
             safety_flags=safety_flags,
             tool_ids=tool_ids,
             metadata=metadata,
         )
+
+
+def _default_event_input(event: EventEnvelope) -> str:
+    """Derive a deterministic provider input from an event without raw payload."""
+
+    return f"{event.source}:{event.event_type}:{event.event_id}"
 
 
 def _detect_indirect_injection(result: ToolResult) -> ToolResult:

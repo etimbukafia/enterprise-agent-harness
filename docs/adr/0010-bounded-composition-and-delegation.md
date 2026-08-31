@@ -28,7 +28,9 @@ state controls as a direct run.
 5. Child executions retain the parent correlation ID and record parent
    execution ID, delegation ID, positive depth, and an identity path. The
    composer rejects an identity already in the path and rejects a configured
-   maximum-depth overflow.
+   maximum-depth overflow. A delegation ID is single-use within its parent.
+   Each delegation receives a separate generated child execution ID and state
+   ID. The composer rejects generated identity reuse before child execution.
 6. Supported composition patterns are router and specialist selection of one
    child, supervisor fan-out across declared children, and sequential
    execution that passes a completed child summary to the next child and stops

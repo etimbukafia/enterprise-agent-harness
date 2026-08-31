@@ -7,23 +7,21 @@ from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from threading import RLock
-from typing import Protocol
 from uuid import uuid4
 
 from packaging.version import InvalidVersion, Version
-from pydantic import Field, model_validator
 
 from .contracts import (
     AgentDefinition,
     AgentLifecycleStatus,
     CapabilityDefinition,
-    ContractModel,
     PolicyDefinition,
     RegistryDependency,
     RegistrySnapshot,
     RiskLevel,
     ToolDescriptor,
 )
+from .registry_audit import ListRegistryAuditSink, RegistryAuditEvent, RegistryAuditSink
 from .tools.definitions import ToolDefinition, ToolInvocationError
 from .tools.registry import ToolRegistry
 
@@ -46,51 +44,6 @@ class StaleRegistrationError(RegistryError):
 
 class RegistryLifecycleError(RegistryError):
     """Raised when a lifecycle transition is not allowed."""
-
-
-class RegistryAuditEvent(ContractModel):
-    """Audit record for a registry mutation or deterministic snapshot."""
-
-    schema_version: str = "agent-registry-event.v1"
-    event_id: str = Field(min_length=1)
-    registry_id: str = Field(min_length=1)
-    operation: str = Field(min_length=1)
-    component_kind: str = Field(min_length=1)
-    component_id: str = Field(min_length=1)
-    version: str = Field(min_length=1)
-    from_status: AgentLifecycleStatus | None = None
-    to_status: AgentLifecycleStatus | None = None
-    occurred_at: datetime
-    metadata: dict[str, str] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def timestamp_is_aware(self) -> RegistryAuditEvent:
-        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
-            raise ValueError("occurred_at must include timezone information")
-        return self
-
-
-class RegistryAuditSink(Protocol):
-    """Storage boundary for registry audit records."""
-
-    def append(self, event: RegistryAuditEvent) -> None:
-        """Store one registry event."""
-
-
-class ListRegistryAuditSink:
-    """Thread-safe in-memory registry audit sink for tests and local use."""
-
-    def __init__(self) -> None:
-        self.events: list[RegistryAuditEvent] = []
-        self._lock = RLock()
-
-    def append(self, event: RegistryAuditEvent) -> None:
-        with self._lock:
-            self.events.append(deepcopy(event))
-
-    def by_registry(self, registry_id: str) -> list[RegistryAuditEvent]:
-        with self._lock:
-            return [deepcopy(event) for event in self.events if event.registry_id == registry_id]
 
 
 class CapabilityRegistry:
@@ -342,10 +295,12 @@ class CapabilityRegistry:
             if self.tools is not None
             else []
         )
+        tool_revision = self.tools.revision if self.tools is not None else 0
         dependencies = _capability_dependencies(capabilities, tools)
         snapshot = RegistrySnapshot(
             snapshot_id=self._id("registry_snapshot"),
-            revision=self.revision,
+            revision=self.revision + tool_revision,
+            tool_registry_revision=tool_revision,
             capabilities=capabilities,
             tools=tools,
             dependencies=dependencies,
@@ -541,12 +496,17 @@ class AgentRegistry:
                 AgentLifecycleStatus.VALIDATED,
                 AgentLifecycleStatus.ACTIVE,
             }:
-                self._validate_agent(
-                    candidate,
-                    required_dependency_statuses={
+                required_statuses = (
+                    {AgentLifecycleStatus.ACTIVE}
+                    if candidate.lifecycle == AgentLifecycleStatus.ACTIVE
+                    else {
                         AgentLifecycleStatus.VALIDATED,
                         AgentLifecycleStatus.ACTIVE,
-                    },
+                    }
+                )
+                self._validate_agent(
+                    candidate,
+                    required_dependency_statuses=required_statuses,
                 )
             self._agents[key] = candidate
             self._changed(
@@ -577,6 +537,10 @@ class AgentRegistry:
                     raise RegistryError(f"unknown agent: {agent_id}@{version}")
                 if agent.lifecycle != AgentLifecycleStatus.ACTIVE:
                     raise RegistryError(f"agent is not active: {agent_id}@{version}")
+                self._validate_agent(
+                    agent,
+                    required_dependency_statuses={AgentLifecycleStatus.ACTIVE},
+                )
                 return deepcopy(agent)
             active = [
                 agent
@@ -587,6 +551,10 @@ class AgentRegistry:
                 raise RegistryError(f"unknown active agent: {agent_id}")
             if len(active) > 1:
                 raise RegistryError(f"agent version is required: {agent_id}")
+            self._validate_agent(
+                active[0],
+                required_dependency_statuses={AgentLifecycleStatus.ACTIVE},
+            )
             return deepcopy(active[0])
 
     def list(self, *, include_inactive: bool = False) -> list[AgentDefinition]:
@@ -770,10 +738,12 @@ class AgentRegistry:
             ],
             key=lambda policy: (policy.policy_id, policy.version),
         )
+        tool_revision = self.tools.revision
         dependencies = _agent_dependencies(agents, capabilities, tools)
         snapshot = RegistrySnapshot(
             snapshot_id=self._id("registry_snapshot"),
-            revision=self.revision + self.capabilities.revision,
+            revision=self.revision + self.capabilities.revision + tool_revision,
+            tool_registry_revision=tool_revision,
             agents=agents,
             capabilities=capabilities,
             tools=tools,
@@ -814,9 +784,17 @@ class AgentRegistry:
         tools_by_reference: list[ToolDefinition] = []
         for reference in agent.allowed_tools:
             try:
-                tool = self.tools.get(reference.component_id, reference.version)
+                tool = self.tools.get(
+                    reference.component_id,
+                    reference.version,
+                    include_inactive=True,
+                )
             except ToolInvocationError as exc:
                 raise IncompatibleRegistrationError(str(exc)) from exc
+            if tool.lifecycle not in required_dependency_statuses:
+                raise IncompatibleRegistrationError(
+                    f"tool is not usable: {tool.tool_id}@{tool.version}"
+                )
             if _risk_exceeds(tool.risk_level, agent.risk_level):
                 raise IncompatibleRegistrationError(
                     f"tool risk exceeds agent risk: {tool.tool_id}@{tool.version}"
@@ -825,7 +803,7 @@ class AgentRegistry:
             for dependency in tool.dependencies:
                 if not any(
                     candidate.tool_id == dependency
-                    and candidate.lifecycle == AgentLifecycleStatus.ACTIVE
+                    and candidate.lifecycle in required_dependency_statuses
                     for candidate in self.tools.list(include_inactive=True)
                 ):
                     raise IncompatibleRegistrationError(

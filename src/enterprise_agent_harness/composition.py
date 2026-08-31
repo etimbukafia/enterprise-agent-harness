@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from threading import RLock
 from typing import Final
 
 from .contracts import (
@@ -67,6 +68,12 @@ class AgentComposer:
         self.max_delegation_depth = max_delegation_depth
         self._id = id_factory or factory.new_id
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._identity_lock = RLock()
+        self._delegation_ids: dict[str, set[str]] = {}
+        self._child_execution_ids: set[str] = set()
+        self._child_state_ids: set[str] = set()
+        self._identity_counter = 0
+        self._composition_counter = 0
 
     def delegate(
         self,
@@ -110,8 +117,23 @@ class AgentComposer:
         granted_permissions = self._permission_ceiling(parent, request)
         self._validate_tool_permissions(child, authorized_tool_versions, granted_permissions)
         effective_risk = self._risk_ceiling(parent, child, request)
-        max_steps = min(parent.max_steps, child.manifest.runtime_limits.max_plan_steps)
-        child_execution_id = f"{request.delegation_id}:execution"
+        max_steps = min(parent.max_steps, child._trusted_max_plan_steps)
+        with self._identity_lock:
+            parent_delegations = self._delegation_ids.setdefault(parent.execution_id, set())
+            if request.delegation_id in parent_delegations:
+                raise DelegationError("delegation ID cannot be reused within a parent execution")
+            parent_delegations.add(request.delegation_id)
+            self._identity_counter += 1
+            suffix = str(self._identity_counter)
+            child_execution_id = f"{self._id('child_execution')}-{suffix}"
+            child_state_id = f"{self._id('child_state')}-{suffix}"
+            if child_execution_id in self._child_execution_ids:
+                raise DelegationError("child execution ID cannot be reused")
+            if child_state_id in self._child_state_ids:
+                raise DelegationError("child state ID cannot be reused")
+            self._child_execution_ids.add(child_execution_id)
+            self._child_state_ids.add(child_state_id)
+        child_agent_id, child_agent_version = child._trusted_agent_identity
         delegated_context = DelegatedExecutionContext(
             delegation_id=request.delegation_id,
             correlation_id=parent.correlation_id,
@@ -119,8 +141,8 @@ class AgentComposer:
             parent_agent_id=parent.agent_id,
             parent_agent_version=parent.agent_version,
             child_execution_id=child_execution_id,
-            child_agent_id=child.manifest.agent.agent_id,
-            child_agent_version=child.manifest.agent.version,
+            child_agent_id=child_agent_id,
+            child_agent_version=child_agent_version,
             principal=parent.principal,
             authorized_tool_ids=authorized_tool_ids,
             authorized_tool_versions=authorized_tool_versions,
@@ -140,7 +162,7 @@ class AgentComposer:
             max_risk_level=delegated_context.max_risk_level,
             max_steps=delegated_context.max_steps,
             execution_id=delegated_context.child_execution_id,
-            state_id=f"delegation:{request.delegation_id}",
+            state_id=child_state_id,
             correlation_id=delegated_context.correlation_id,
             parent_execution_id=delegated_context.parent_execution_id,
             delegation_id=delegated_context.delegation_id,
@@ -174,8 +196,13 @@ class AgentComposer:
         outcomes: list[AgentOutcome] = []
         next_input = input_text
         for step in steps:
+            with self._identity_lock:
+                self._composition_counter += 1
+                delegation_id = (
+                    f"{self._id(f'delegation_{step.step_id}')}-{self._composition_counter}"
+                )
             request = DelegationRequest(
-                delegation_id=self._id(f"delegation_{step.step_id}"),
+                delegation_id=delegation_id,
                 parent_execution_id=parent.execution_id,
                 parent_agent_id=parent.agent_id,
                 parent_agent_version=parent.agent_version,
@@ -236,8 +263,8 @@ class AgentComposer:
         request: DelegationRequest,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         child_references = {
-            f"{reference.component_id}@{reference.version}": reference.component_id
-            for reference in child.manifest.agent.allowed_tools
+            reference: reference.split("@", 1)[0]
+            for reference in child._trusted_allowed_tool_versions
         }
         child_ids = set(child_references.values())
         requested_ids = set(request.requested_tool_ids)
@@ -283,9 +310,9 @@ class AgentComposer:
         allowed = set(authorized_tool_versions)
         required = {
             permission
-            for tool in child.manifest.tools
-            if f"{tool.tool_id}@{tool.version}" in allowed
-            for permission in tool.required_permissions
+            for reference, permissions in child._trusted_tool_permissions
+            if reference in allowed
+            for permission in permissions
         }
         if not required.issubset(granted_permissions):
             missing = sorted(required.difference(granted_permissions))
@@ -299,7 +326,7 @@ class AgentComposer:
         child: BuiltAgent,
         request: DelegationRequest,
     ) -> RiskLevel:
-        child_risk = child.manifest.agent.risk_level
+        child_risk = child._trusted_risk_level
         if self._exceeds(child_risk, parent.max_risk_level):
             raise DelegationAuthorityError("child agent risk exceeds parent risk ceiling")
         requested = request.max_risk_level or child_risk

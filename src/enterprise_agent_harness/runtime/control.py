@@ -7,7 +7,11 @@ from collections.abc import Callable
 from threading import Event, Lock
 from typing import Protocol
 
-from ..errors import ExecutionCancelledError, ExecutionTimeoutError
+from ..errors import (
+    BudgetExhaustedError,
+    ExecutionCancelledError,
+    ExecutionTimeoutError,
+)
 
 
 class CancellationSignal(Protocol):
@@ -53,11 +57,20 @@ class ExecutionControl:
         max_retries: int | None,
         cancellation_signal: CancellationSignal | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        max_total_tokens: int | None = None,
+        max_cost: float | None = None,
+        max_tool_invocations: int | None = None,
     ) -> None:
         if timeout_seconds is not None and timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
         if max_retries is not None and max_retries < 0:
             raise ValueError("max_retries must not be negative")
+        if max_total_tokens is not None and max_total_tokens < 1:
+            raise ValueError("max_total_tokens must be positive")
+        if max_cost is not None and max_cost < 0:
+            raise ValueError("max_cost must not be negative")
+        if max_tool_invocations is not None and max_tool_invocations < 1:
+            raise ValueError("max_tool_invocations must be positive")
         self._monotonic = monotonic
         self._started_at = monotonic()
         self._deadline = self._started_at + timeout_seconds if timeout_seconds is not None else None
@@ -68,6 +81,14 @@ class ExecutionControl:
         self._retry_lock = Lock()
         self._cancellation_signal = cancellation_signal
         self._execution_id: str | None = None
+        self._max_total_tokens = max_total_tokens
+        self._max_cost = max_cost
+        self._max_tool_invocations = max_tool_invocations
+        self._total_tokens = 0
+        self._total_cost = 0.0
+        self._tool_invocations = 0
+        self._budget_reason: str | None = None
+        self._budget_lock = Lock()
 
     @property
     def execution_id(self) -> str | None:
@@ -114,6 +135,67 @@ class ExecutionControl:
 
         with self._retry_lock:
             return self._retry_budget_exhausted
+
+    @property
+    def total_tokens(self) -> int:
+        """Return the token usage recorded against this execution."""
+
+        with self._budget_lock:
+            return self._total_tokens
+
+    @property
+    def total_cost(self) -> float:
+        """Return the cost recorded against this execution."""
+
+        with self._budget_lock:
+            return self._total_cost
+
+    @property
+    def tool_invocations(self) -> int:
+        """Return the number of tool invocations recorded for this execution."""
+
+        with self._budget_lock:
+            return self._tool_invocations
+
+    @property
+    def budget_reason(self) -> str | None:
+        """Return the reason the budget was exhausted, if any."""
+
+        with self._budget_lock:
+            return self._budget_reason
+
+    def record_provider_usage(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cost: float,
+    ) -> None:
+        """Record token and cost usage and raise when a budget is exceeded."""
+
+        self.check()
+        with self._budget_lock:
+            self._total_tokens += input_tokens + output_tokens
+            self._total_cost += cost
+            if self._max_total_tokens is not None and self._total_tokens > self._max_total_tokens:
+                self._budget_reason = "max_total_tokens"
+                raise BudgetExhaustedError("provider token budget exhausted")
+            if self._max_cost is not None and self._total_cost > self._max_cost:
+                self._budget_reason = "max_cost"
+                raise BudgetExhaustedError("provider cost budget exhausted")
+
+    def record_tool_invocation(self) -> None:
+        """Record one tool invocation and raise when the invocation budget is exceeded."""
+
+        self.check()
+        with self._budget_lock:
+            self._tool_invocations += 1
+            if (
+                self._max_tool_invocations is not None
+                and self._tool_invocations > self._max_tool_invocations
+            ):
+                self._budget_reason = "max_tool_invocations"
+                raise BudgetExhaustedError("tool invocation budget exhausted")
 
     def is_cancelled(self) -> bool:
         """Return whether the caller requested cancellation."""

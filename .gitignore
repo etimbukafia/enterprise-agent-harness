@@ -1,6 +1,7 @@
 # Python bytecode and caches
 __pycache__/
 .pytest_cache/
+.pytest-temp/
 .mypy_cache/
 .ruff_cache/
 *.py[cod]
@@ -45,5 +46,6 @@ ENV/
 # Editor and operating-system files
 .idea/
 .vscode/
+.commandcode/
 .DS_Store
 Thumbs.db

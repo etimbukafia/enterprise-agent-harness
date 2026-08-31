@@ -381,19 +381,23 @@ Allow multiple agents and capabilities to cooperate without unrestricted peer au
 
 ## Phase 11: Event-Driven and Background Agents
 
+Status: complete. Evidence: `background/`, `AgentRuntime.execute_event`,
+`tests/test_phase_11_background.py`, and
+`adr/0011-event-driven-background-execution.md`.
+
 ### Objective
 Support agents triggered by events or scheduled work rather than only interactive calls.
 
 ### Tasks
-- [ ] Define event envelope and trigger contracts.
-- [ ] Add event-triggered execution entry point.
-- [ ] Add background job runner abstraction.
-- [ ] Add lease/lock semantics for duplicate event handling.
-- [ ] Add deduplication and idempotency.
-- [ ] Add dead-letter/failure handling hooks.
-- [ ] Add cancellation and retry policies.
-- [ ] Add event audit correlation.
-- [ ] Add tests for duplicate delivery and process restart.
+- [x] Define event envelope and trigger contracts.
+- [x] Add event-triggered execution entry point.
+- [x] Add background job runner abstraction.
+- [x] Add lease/lock semantics for duplicate event handling.
+- [x] Add deduplication and idempotency.
+- [x] Add dead-letter/failure handling hooks.
+- [x] Add cancellation and retry policies.
+- [x] Add event audit correlation.
+- [x] Add tests for duplicate delivery and process restart.
 
 ### Exit criteria
 - The same runtime can execute interactive and event-driven agents.
@@ -403,20 +407,25 @@ Support agents triggered by events or scheduled work rather than only interactiv
 
 ## Phase 12: Observability, Audit, and Cost Controls
 
+Status: complete. Evidence: `observability/metrics.py`,
+`observability/redaction.py`, extended `RunTrace`/`AuditEvent`/`TraceEvent`
+schemas, budget enforcement in `runtime/`, `tests/test_phase_12_observability.py`,
+and `adr/0012-observability-audit-cost-controls.md`.
+
 ### Objective
 Make every enterprise agent execution inspectable and measurable.
 
 ### Tasks
-- [ ] Define trace schema for provider calls, tool calls, policy decisions, approvals, delegation, state transitions, and final outcomes.
-- [ ] Implement pluggable `AuditSink`.
-- [ ] Implement pluggable `TraceSink`.
-- [ ] Add latency metrics.
-- [ ] Add token and provider cost metrics.
-- [ ] Add per-agent and per-tool usage metrics.
-- [ ] Add execution budget limits.
-- [ ] Add redaction hooks for sensitive fields.
-- [ ] Add correlation IDs.
-- [ ] Export a trace bundle suitable for external eval systems.
+- [x] Define trace schema for provider calls, tool calls, policy decisions, approvals, delegation, state transitions, and final outcomes.
+- [x] Implement pluggable `AuditSink`.
+- [x] Implement pluggable `TraceSink`.
+- [x] Add latency metrics.
+- [x] Add token and provider cost metrics.
+- [x] Add per-agent and per-tool usage metrics.
+- [x] Add execution budget limits.
+- [x] Add redaction hooks for sensitive fields.
+- [x] Add correlation IDs.
+- [x] Export a trace bundle suitable for external eval systems.
 
 ### Exit criteria
 - Every important runtime decision can be reconstructed from structured evidence.
@@ -449,18 +458,22 @@ Make common agent failure and attack paths explicit and testable.
 
 ## Phase 14: External Evaluation Integration Contract
 
+Status: complete. Evidence: `evaluation/`, `BuiltAgent.trace_for`,
+`examples/external_evaluation.py`, `tests/test_phase_14_evaluation.py`, and the
+quality workflow.
+
 ### Objective
 Allow independent evaluation and improvement systems to consume harness behavior cleanly.
 
 ### Tasks
-- [ ] Define stable run trace export format.
-- [ ] Define agent manifest export format.
-- [ ] Define test-case adapter interface.
-- [ ] Define baseline and candidate identifiers.
-- [ ] Define metric and hard-gate hooks.
-- [ ] Add deterministic replay adapter.
-- [ ] Add example integration with an external evaluation package.
-- [ ] Keep evaluation policy outside the core runtime.
+- [x] Define stable run trace export format.
+- [x] Define agent manifest export format.
+- [x] Define test-case adapter interface.
+- [x] Define baseline and candidate identifiers.
+- [x] Define metric and hard-gate hooks.
+- [x] Add deterministic replay adapter.
+- [x] Add example integration with an external evaluation package.
+- [x] Keep evaluation policy outside the core runtime.
 
 ### Exit criteria
 - An external lab can evaluate an agent without importing private runtime internals.
@@ -529,10 +542,11 @@ For the first useful release, complete:
 9. Phase 7: Durable Execution
 10. Phase 8: Registries
 11. Phase 9: Agent Factory
-12. Phase 12: Observability and Audit
-13. Phase 14: External Evaluation Contract
+12. Phase 10: Composition and Delegation
+13. Phase 11: Event-Driven and Background Agents
+14. Phase 12: Observability and Audit
 
-Then add composition, background agents, and hardening.
+Then add safety hardening and the external evaluation contract.
 
 ## v0.1 milestone
 

@@ -36,8 +36,10 @@ An approval request contains:
 When no decision is available, `AgentRuntime.execute` returns `escalated`,
 records `approval_requested`, and keeps the execution resumable. The
 application records an approve, reject, or request-change decision. Resume
-checks the request ID when present, the exact action digest, the request
-expiry, and the decision expiry before a handler can run.
+requires the exact request ID, the exact action digest, the request expiry,
+and the decision expiry before a handler can run. A decision request ID is
+mandatory. A successful resume consumes the request. A consumed request
+cannot run again.
 
 An approved resume continues the stored bounded plan from the paused step with
 the exact approval digest in the trusted execution context. It does not re-run

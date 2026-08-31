@@ -82,6 +82,14 @@ version propagation, bounded router/supervisor/specialist/sequential
 composition, maximum depth, cycle detection, and shared trace/audit
 correlation.
 
+Phase 11 provides event-driven and background execution: a provider-neutral
+event envelope with distinct event, trigger, correlation, and dedup identities;
+`AgentRuntime.execute_event`; and a `BackgroundJobRunner` with lease, dedup,
+bounded retry, cancellation, and dead-letter controls on the same governed
+runtime. Phase 12 provides structured audit and trace sinks, attributable
+metrics and a configurable cost model, trusted execution budgets, configurable
+redaction, and stable correlation across retries and resumptions.
+
 See [`docs/public-api.md`](docs/public-api.md) for supported imports,
 [`docs/providers.md`](docs/providers.md) for provider integration guidance,
 and [`docs/development.md`](docs/development.md) for local quality commands.

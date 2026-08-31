@@ -186,6 +186,7 @@ def test_action_and_approval_contracts_round_trip_and_keep_exact_digest() -> Non
     )
     decision = ApprovalDecision(
         approval_id="approval-1",
+        request_id=request.request_id,
         action_digest=request.action_digest,
         approved=True,
         decided_by="reviewer-1",

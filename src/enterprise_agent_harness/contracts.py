@@ -112,6 +112,7 @@ class SafetyFlag(str, Enum):
     EXECUTION_TIMEOUT = "execution_timeout"
     EXECUTION_CANCELLED = "execution_cancelled"
     RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
+    BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 class ContextTrust(str, Enum):
@@ -233,6 +234,10 @@ class ExecutionContext(ContractModel):
     delegation_id: str | None = Field(default=None, min_length=1)
     delegation_depth: int = Field(default=0, ge=0, le=100)
     delegation_path: tuple[str, ...] = ()
+    event_id: str | None = Field(default=None, min_length=1)
+    trigger_id: str | None = Field(default=None, min_length=1)
+    causation_id: str | None = Field(default=None, min_length=1)
+    attempt: int = Field(default=0, ge=0, le=1000000)
 
     @model_validator(mode="after")
     def authority_lists_are_unique(self) -> Self:
@@ -522,7 +527,7 @@ class ApprovalDecision(ContractModel):
     """Exact approval evidence for one sensitive action proposal."""
 
     approval_id: str = Field(min_length=1)
-    request_id: str | None = Field(default=None, min_length=1)
+    request_id: str = Field(min_length=1)
     action_digest: str = Field(min_length=1)
     approved: bool | None = None
     decision: ApprovalDecisionStatus | None = None
@@ -957,6 +962,9 @@ class RuntimeConfig(ContractModel):
     execution_timeout_seconds: float | None = Field(default=60.0, gt=0.0, le=3600.0)
     max_retries: int = Field(default=3, ge=0, le=100)
     approval_expiry_seconds: float | None = Field(default=900.0, gt=0.0, le=86400.0)
+    max_total_tokens: int | None = Field(default=None, ge=1, le=100000000)
+    max_cost: float | None = Field(default=None, ge=0.0)
+    max_tool_invocations: int | None = Field(default=None, ge=1, le=1000000)
     environment: str = Field(default="development", min_length=1)
     max_risk_level: RiskLevel = RiskLevel.CRITICAL
 
@@ -1169,6 +1177,7 @@ class RegistrySnapshot(ContractModel):
     schema_version: Literal["agent-registry-snapshot.v1"] = "agent-registry-snapshot.v1"
     snapshot_id: str = Field(min_length=1)
     revision: int = Field(ge=0)
+    tool_registry_revision: int = Field(default=0, ge=0)
     generated_at: datetime = Field(default_factory=utc_now)
     agents: list[AgentDefinition] = Field(default_factory=list)
     capabilities: list[CapabilityDefinition] = Field(default_factory=list)
@@ -1338,3 +1347,50 @@ class CompositionResult(ContractModel):
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
             raise ValueError("created_at must include timezone information")
         return self
+
+
+class ProviderUsageMetric(ContractModel):
+    """Provider- and model-attributed usage for one execution."""
+
+    schema_version: Literal["agent-provider-usage.v1"] = "agent-provider-usage.v1"
+    provider_id: str = Field(min_length=1)
+    provider_version: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    calls: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    cost: float = Field(default=0.0, ge=0.0)
+
+
+class ToolUsageMetric(ContractModel):
+    """Per-tool usage for one execution."""
+
+    schema_version: Literal["agent-tool-usage.v1"] = "agent-tool-usage.v1"
+    tool_id: str = Field(min_length=1)
+    tool_version: str = Field(min_length=1)
+    invocations: int = Field(default=0, ge=0)
+    latency_ms: float = Field(default=0.0, ge=0.0)
+
+
+class ExecutionMetrics(ContractModel):
+    """Structured, attributable usage and cost evidence for one execution."""
+
+    schema_version: Literal["agent-execution-metrics.v1"] = "agent-execution-metrics.v1"
+    execution_id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    agent_version: str = Field(min_length=1)
+    attempt: int = Field(default=0, ge=0)
+    execution_latency_ms: float = Field(default=0.0, ge=0.0)
+    provider_calls: int = Field(default=0, ge=0)
+    provider_latency_ms: float = Field(default=0.0, ge=0.0)
+    tool_invocations: int = Field(default=0, ge=0)
+    tool_latency_ms: float = Field(default=0.0, ge=0.0)
+    total_input_tokens: int = Field(default=0, ge=0)
+    total_output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    total_cost: float = Field(default=0.0, ge=0.0)
+    providers: tuple[ProviderUsageMetric, ...] = ()
+    tools: tuple[ToolUsageMetric, ...] = ()

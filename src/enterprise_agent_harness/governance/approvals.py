@@ -147,6 +147,7 @@ class InMemoryApprovalBroker:
         self._id = id_factory or (lambda prefix: f"{prefix}_{uuid4().hex[:10]}")
         self._requests: dict[str, ApprovalRequest] = {}
         self._decisions: dict[str, ApprovalDecision] = {}
+        self._consumed: set[str] = set()
         self._lock = RLock()
 
     @property
@@ -200,6 +201,18 @@ class InMemoryApprovalBroker:
         with self._lock:
             return deepcopy(self._decision_locked(request_id))
 
+    def consume(self, request_id: str) -> None:
+        """Mark one decided request as consumed and reject replay."""
+
+        with self._lock:
+            if request_id not in self._requests:
+                return
+            if self._decision_locked(request_id) is None:
+                raise ValueError("approval request has no decision")
+            if request_id in self._consumed:
+                raise ValueError("approval request has already been consumed")
+            self._consumed.add(request_id)
+
     def decide(
         self,
         request_id: str,
@@ -250,7 +263,7 @@ class InMemoryApprovalBroker:
         """Record externally created evidence after checking its exact request."""
 
         with self._lock:
-            request = self._requests.get(decision.request_id or "")
+            request = self._requests.get(decision.request_id)
             if request is None:
                 raise KeyError("approval decision must reference a submitted request")
             self._validate_decision_against_request(request, decision)

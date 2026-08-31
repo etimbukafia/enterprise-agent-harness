@@ -92,6 +92,14 @@ class ToolDefinition:
         object.__setattr__(self, "kind", ToolKind(self.kind))
         object.__setattr__(self, "risk_level", RiskLevel(self.risk_level))
         object.__setattr__(self, "lifecycle", AgentLifecycleStatus(self.lifecycle))
+        for name in (
+            "required_permissions",
+            "sensitive_argument_fields",
+            "tags",
+            "dependencies",
+            "allowed_environments",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
         for name, value in (
             ("tool_id", self.tool_id),
             ("version", self.version),

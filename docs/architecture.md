@@ -1,6 +1,6 @@
 # Enterprise agent runtime architecture
 
-Status: accepted baseline through Phase 10.
+Status: accepted baseline through Phase 14.
 
 This document defines the boundaries and invariants for the Enterprise Agent
 Harness. Later phases can add implementations. They must not move a
@@ -75,6 +75,8 @@ These invariants apply to every execution mode:
     approval evidence.
 15. Delegated executions retain the parent correlation ID, carry an explicit
     depth and identity path, and fail closed on depth overflow or cycles.
+16. A factory-built runtime is bound to one exact agent version and checks the
+    live agent and dependency lifecycle before every new execution and resume.
 
 ## Responsibility boundaries
 
@@ -197,6 +199,7 @@ outcome when a control stops the run. A plan cannot exceed
 | Read tool | The handler returns a typed result. The tool declares no intended business mutation. Permission and policy checks still apply. |
 | Write tool | The handler may mutate business data. The tool declares idempotency behavior. A duplicate-sensitive call needs an idempotency key before invocation. |
 | Background action | An event or schedule starts the same runtime path with an explicit principal, tenant, trigger identity, and execution ID. Queue, lease, retry, and durable job storage are consumer or later-phase boundaries. |
+| Event-driven action | `AgentRuntime.execute_event` resolves event input, forces event correlation fields, and calls the same governed `execute` path. `BackgroundJobRunner` adds dedup, lease, bounded retry, cancellation, and dead-letter controls without bypassing the runtime. |
 | Approval-gated action | The runtime creates an exact digest from the tool identity, tool version, and canonical arguments. The handler runs only after a valid, unexpired decision for that digest. |
 
 Approval is a gate on one exact action. A provider cannot change the action
@@ -250,13 +253,21 @@ before validation or activation. Both registries support activation,
 suspension, deprecation, and retirement. Exact versions are immutable;
 replacement means registering a new version.
 
+An active agent may register or resolve only when every exact dependency is
+active. A validated agent may reference validated or active dependencies. Exact
+active agent resolution repeats the dependency checks, so suspending a
+capability, tool, or other dependency stops previously built agents before
+their next execution or resume.
+
 Registry queries return copies so callers cannot mutate registry state through
 the read API. Snapshots sort component records and dependency edges for
 deterministic planning and include exact agent-to-capability, agent-to-tool,
 agent-to-policy, capability-to-tool, and tool-to-tool dependency edges.
 Mutation and snapshot events use `RegistryAuditEvent` and an application-owned
-`RegistryAuditSink`; the snapshot revision and event history make registry
-state auditable.
+`RegistryAuditSink`; tool registration and lifecycle changes use the same
+audit contract. Capability and agent snapshots include the current tool
+registry revision. The combined revision and event history make registry state
+auditable.
 
 ## Declarative agent factory
 
@@ -267,14 +278,25 @@ strategies. `RuntimeProfileRegistry` and `ProviderRegistry` resolve immutable
 exact records. Standard templates validate common authority shapes: a
 read-only analyst cannot expose side-effecting tools, an action agent must
 expose one, an approval-gated operator must declare side-effect and review
-control, and a router is composition-oriented.
+control, and a router is composition-oriented. For an approval-gated operator,
+every write or action tool must declare `requires_approval=True` or be covered
+by a matching active allow rule with `requires_approval=True`. The
+`approval_requirements` list is metadata and does not satisfy this check by
+itself.
 
 `AgentFactory.validate()` performs dependency and compatibility resolution
 without mutation. `build()` can dry-run, register the definition, activate it,
 and construct `AgentRuntime` with the resolved components. `BuiltAgent` keeps
-identity, tool versions, and risk bounded by its `ResolvedAgentManifest`; a
-caller cannot override the pinned agent identity or grant a tool outside the
-manifest. The factory does not generate arbitrary code.
+identity, tool versions, and risk bounded by a private build-time authority
+snapshot. `ResolvedAgentManifest` is a tamper-evident public snapshot. The
+factory recalculates its digest before execution and rejects a modified
+manifest before a provider or tool runs. A caller cannot override the pinned
+agent identity or grant a tool outside the manifest. The factory does not
+generate arbitrary code. A created runtime is bound to the exact agent ID and
+version and applies a live registry guard before both new executions and
+resumes, including calls made through `BuiltAgent.runtime`. If an approval
+service is absent, a required approval produces an escalated outcome and the
+handler is not called.
 
 ## Tool runtime and registry
 
@@ -285,8 +307,13 @@ timeout, and explicit retry settings.
 
 `ToolRegistry` owns in-memory registration and exact resolution. It supports
 registration, lookup, listing, version lookup, deprecation, suspension, and
-retirement. Only active versions resolve for execution. A provider receives a
-`ToolDescriptor`, which contains metadata and schemas but never a handler.
+retirement. An exact tool ID and version can be registered only once. A
+correction or behavior change requires a new version. A deprecated tool cannot
+return to active service, and a retired tool is terminal. Only active versions
+resolve for execution. The registry increments its monotonic revision and
+emits an audit event for every registration or lifecycle change. A provider
+receives a `ToolDescriptor`, which contains metadata and schemas but never a
+handler.
 
 The registry validates arguments before it calls a handler. It validates every
 returned output and result envelope after the call. It records attempts,
@@ -452,6 +479,21 @@ points; and trace/replay contracts. Provider integration details are in
 Provider SDK types, private helpers, sink storage details, and evaluation
 graders are not public API.
 
+## External evaluation integration
+
+Phase 14 extends the existing `evaluation` contract package. It exports the
+versioned `RunTrace` and `ResolvedAgentManifest` as JSON-safe data. A consumer
+maps an external case to `EvaluationExecutionInput` and runs a `BuiltAgent`.
+The result is `EvaluationEvidence` with a baseline or candidate manifest
+identity.
+
+Metric and hard-gate hooks are protocols only. The runtime does not call them.
+They cannot change permissions, policy, approval, or execution authority.
+
+Recorded replay validates and reconstructs exported trace evidence. It does not
+call providers, tools, handlers, approvals, or state stores. It is safe for
+irreversible actions because it does not perform live execution.
+
 ## Package and quality baseline
 
 The project uses a `src/` package layout and a `tests/` public-boundary test
@@ -461,6 +503,63 @@ The required quality workflow is `.github/workflows/ci.yml`. It runs on pushes
 and pull requests and checks formatting, linting, strict typing, tests, and
 Python compilation on supported Python versions. The core package has no
 provider API-key requirement.
+
+## Event-driven and background execution
+
+`EventEnvelope` carries four distinct identities: `event_id` (one delivered
+event), `trigger_id` (derived from event type and source), `correlation_id`
+(one logical work item, stable across retries, resumptions, and delegations),
+and `deduplication_key` (idempotency identity). `causation_id` records an
+optional parent event or execution. The raw event payload is never exported;
+only `payload_digest` reaches trace and audit records.
+
+`AgentRuntime.execute_event` is the only event entry point. It resolves the
+provider input from an extractor or a deterministic default, forces the
+event-derived correlation fields, and calls the existing `execute` path. It
+never bypasses permission, policy, approval, budget, state, trace, audit,
+tool-validation, or delegation controls.
+
+`BackgroundJobRunner` owns dedup lookup, lease acquisition, bounded retry,
+cancellation, dead-letter disposition, and event audit correlation. It calls an
+application `JobHandler` that routes through `AgentRuntime.execute_event`.
+Each retry is a new `execution_id` that keeps the same `correlation_id`,
+`event_id`, `trigger_id`, and an incremented `attempt`. Retries are bounded and
+only cover retryable transient failures; a completed irreversible action is
+never retried. Deduplication guards the whole event, while a write/action tool
+still carries its own idempotency key inside the governed execution.
+
+Lease and dedup semantics are explicit extension points (`LeaseStore`,
+`DeduplicationStore`) with deterministic in-memory implementations for tests.
+They are single-process and do not provide distributed-lock or durable-queue
+guarantees; production adapters for queues, schedulers, locks, and durable dedup
+storage are consumer boundaries.
+
+## Observability, audit, and cost controls
+
+Audit and trace stay distinct. `AuditEvent` records governance- and
+security-relevant decisions; `TraceEvent` and `RunTrace` record diagnostic
+evidence. Both sinks are pluggable, and a sink `append` failure is isolated so
+it never aborts an execution or changes a governance decision. A separate
+`ObservabilityFailureReporter` records safe sink-failure evidence. Its own
+failure is also best effort.
+
+`RunTrace` carries attributable `ExecutionMetrics` with execution, provider,
+and tool latency; input, output, and total tokens; per-provider and per-tool
+breakdowns; and estimated cost. `CostModel` is an extension point with a
+zero-cost deterministic default (`StaticTokenCostModel`); the runtime does not
+hard-code unstable vendor pricing. Approval resume merges prior and resumed
+records before it exports metrics.
+
+Execution budgets are trusted `RuntimeConfig` limits: `max_total_tokens`,
+`max_cost`, and `max_tool_invocations`, in addition to the existing elapsed-time
+and retry budgets. Budget exhaustion produces a structured terminal `FAILED`
+outcome with `SafetyFlag.BUDGET_EXHAUSTED`; a model or provider cannot raise
+its own budget.
+
+Redaction is a `Redactor` extension point applied to exported trace and audit
+metadata. Tool arguments redact through the existing tool boundary, and event
+payloads export only as a digest. Redaction never destroys the data the runtime
+needs to execute an approved action.
 
 ## Architecture records and phase boundary
 
@@ -483,7 +582,13 @@ The following decisions are accepted for this baseline:
   and
 - `adr/0010-bounded-composition-and-delegation.md` - parent-child authority
   ceilings, runtime-only delegation, composition patterns, depth, cycles, and
-  correlation.
+  correlation; and
+- `adr/0011-event-driven-background-execution.md` - event envelope and
+  correlation identities, `execute_event`, lease and dedup extension points,
+  bounded retry, dead-letter, and event audit correlation; and
+- `adr/0012-observability-audit-cost-controls.md` - audit versus trace
+  responsibilities, pluggable sinks, metrics and cost model, execution budgets,
+  redaction, correlation, and trace bundle export.
 
 Phase 0B establishes the decisions and skeleton. Phases 1 and 2 implement the
 core contracts, provider-neutral request/response boundary, deterministic fake,
@@ -498,5 +603,10 @@ boundaries. Phase 5 implements the bounded coordinator and run controls. Phase
  resolution, reusable runtime profiles, templates, manifests, registration,
  and dry runs. Phase 10 implements runtime-only delegation, composition
  patterns, authority ceilings, depth/cycle controls, and shared correlation.
- Background execution, cost controls, and production integrations remain later
- phases and must use this baseline.
+ Phase 11 implements event-driven and background execution with dedup, lease,
+ bounded retry, cancellation, and dead-letter controls on top of the same
+ runtime. Phase 12 implements structured audit and trace sinks, attributable
+ metrics and cost, execution budgets, redaction, and correlation. Phase 14
+ exports stable trace and manifest evidence, test-case adaptation, subject
+ identity, policy-neutral hooks, and offline recorded replay. Production
+ integrations remain later phases and must use this baseline.

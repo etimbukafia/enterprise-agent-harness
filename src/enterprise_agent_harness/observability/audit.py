@@ -11,6 +11,12 @@ from typing import Protocol
 from pydantic import Field, model_validator
 
 from ..contracts import ContractModel, OutcomeStatus, PrincipalContext, SafetyFlag
+from .failures import (
+    ListObservabilityFailureReporter,
+    ObservabilityFailureReporter,
+    report_observability_failure,
+)
+from .redaction import DefaultRedactor, Redactor
 
 
 class AuditEvent(ContractModel):
@@ -29,6 +35,10 @@ class AuditEvent(ContractModel):
     parent_execution_id: str | None = Field(default=None, min_length=1)
     delegation_id: str | None = Field(default=None, min_length=1)
     delegation_depth: int = Field(default=0, ge=0, le=100)
+    source_event_id: str | None = Field(default=None, min_length=1)
+    trigger_id: str | None = Field(default=None, min_length=1)
+    causation_id: str | None = Field(default=None, min_length=1)
+    attempt: int = Field(default=0, ge=0)
     outcome_status: OutcomeStatus | None = None
     safety_flags: list[SafetyFlag] = Field(default_factory=list)
     tool_ids: list[str] = Field(default_factory=list)
@@ -71,28 +81,20 @@ class ListAuditSink:
 class AuditLogger:
     """Write identity-, action-, and outcome-bound audit records."""
 
-    _BLOCKED_KEY_PARTS = (
-        "message",
-        "prompt",
-        "text",
-        "content",
-        "output",
-        "secret",
-        "token",
-        "credential",
-        "password",
-    )
-
     def __init__(
         self,
         *,
         sink: AuditSink,
         id_factory: Callable[[str], str],
         clock: Callable[[], datetime],
+        redactor: Redactor | None = None,
+        failure_reporter: ObservabilityFailureReporter | None = None,
     ) -> None:
         self.sink = sink
         self._id = id_factory
         self._clock = clock
+        self._redactor = redactor or DefaultRedactor()
+        self.failure_reporter = failure_reporter or ListObservabilityFailureReporter()
 
     def record(
         self,
@@ -105,35 +107,73 @@ class AuditLogger:
         parent_execution_id: str | None = None,
         delegation_id: str | None = None,
         delegation_depth: int = 0,
+        source_event_id: str | None = None,
+        trigger_id: str | None = None,
+        causation_id: str | None = None,
+        attempt: int = 0,
         outcome_status: OutcomeStatus | None = None,
         safety_flags: list[SafetyFlag] | tuple[SafetyFlag, ...] = (),
         tool_ids: list[str] | None = None,
         metadata: dict[str, str] | None = None,
     ) -> None:
-        """Write one redacted structured event."""
+        """Write one redacted structured event without failing the caller."""
 
         safe_metadata = {
-            key: value[:200]
+            key: self._redactor.redact_value(key, value)
             for key, value in (metadata or {}).items()
-            if key and value and not any(part in key.lower() for part in self._BLOCKED_KEY_PARTS)
+            if key and value and not self._redactor.redact_key(key)
         }
-        self.sink.append(
-            AuditEvent(
-                event_id=self._id("audit"),
-                event_type=event_type,
-                occurred_at=self._clock(),
-                execution_id=execution_id,
-                agent_id=agent_id,
-                principal_id=principal.principal_id,
-                tenant_id=principal.tenant_id,
-                session_id=principal.session_id,
-                correlation_id=correlation_id,
-                parent_execution_id=parent_execution_id,
-                delegation_id=delegation_id,
-                delegation_depth=delegation_depth,
-                outcome_status=outcome_status,
-                safety_flags=list(safety_flags),
-                tool_ids=list(tool_ids or []),
-                metadata=safe_metadata,
-            )
+        event = AuditEvent(
+            event_id=self._id("audit"),
+            event_type=event_type,
+            occurred_at=self._clock(),
+            execution_id=execution_id,
+            agent_id=agent_id,
+            principal_id=principal.principal_id,
+            tenant_id=principal.tenant_id,
+            session_id=principal.session_id,
+            correlation_id=correlation_id,
+            parent_execution_id=parent_execution_id,
+            delegation_id=delegation_id,
+            delegation_depth=delegation_depth,
+            source_event_id=source_event_id,
+            trigger_id=trigger_id,
+            causation_id=causation_id,
+            attempt=attempt,
+            outcome_status=outcome_status,
+            safety_flags=list(safety_flags),
+            tool_ids=list(tool_ids or []),
+            metadata=safe_metadata,
+        )
+        _append_safely(
+            self.sink,
+            event,
+            reporter=self.failure_reporter,
+            id_factory=self._id,
+            clock=self._clock,
+        )
+
+
+def _append_safely(
+    sink: AuditSink,
+    event: AuditEvent,
+    *,
+    reporter: ObservabilityFailureReporter,
+    id_factory: Callable[[str], str],
+    clock: Callable[[], datetime],
+) -> None:
+    """Persist one audit event without letting a sink failure change governance."""
+
+    try:
+        sink.append(event)
+    except Exception as exc:  # noqa: BLE001 - observability persistence is best effort.
+        report_observability_failure(
+            reporter,
+            id_factory=id_factory,
+            clock=clock,
+            sink=sink,
+            operation="audit_append",
+            execution_id=event.execution_id,
+            correlation_id=event.correlation_id,
+            error=exc,
         )

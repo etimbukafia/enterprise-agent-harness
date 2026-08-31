@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime
@@ -13,6 +14,13 @@ from typing import Any, Protocol
 from ..contracts import ExecutionContext, OutcomeStatus, PolicyDecision, ToolExecutionRecord
 from ..evaluation.contracts import RunTrace, TraceEvent
 from ..providers.contracts import ProviderCallMetadata, ProviderCallRecord, ProviderOperation
+from .failures import (
+    ListObservabilityFailureReporter,
+    ObservabilityFailureReporter,
+    report_observability_failure,
+)
+from .metrics import CostModel, aggregate_metrics
+from .redaction import DefaultRedactor, Redactor
 
 
 class TraceSink(Protocol):
@@ -41,18 +49,6 @@ class ListTraceSink:
 class TraceRecorder:
     """Record stages and export a stable, input-redacted run trace."""
 
-    _BLOCKED_KEY_PARTS = (
-        "message",
-        "prompt",
-        "text",
-        "content",
-        "output",
-        "secret",
-        "token",
-        "credential",
-        "password",
-    )
-
     def __init__(
         self,
         *,
@@ -62,11 +58,18 @@ class TraceRecorder:
         id_factory: Callable[[str], str],
         clock: Callable[[], datetime],
         initial_trace: RunTrace | None = None,
+        redactor: Redactor | None = None,
+        cost_model: CostModel | None = None,
+        failure_reporter: ObservabilityFailureReporter | None = None,
     ) -> None:
         self.execution = execution
         self.sink = sink
         self._id = id_factory
         self._clock = clock
+        self._redactor = redactor or DefaultRedactor()
+        self._cost_model = cost_model
+        self.failure_reporter = failure_reporter or ListObservabilityFailureReporter()
+        self._started_at = time.perf_counter()
         self._input_fingerprint = fingerprint(input_text)
         if initial_trace is not None and (
             initial_trace.execution_id != execution.execution_id
@@ -81,6 +84,10 @@ class TraceRecorder:
             or initial_trace.delegation_id != execution.delegation_id
             or initial_trace.delegation_depth != execution.delegation_depth
             or initial_trace.delegation_path != execution.delegation_path
+            or initial_trace.event_id != execution.event_id
+            or initial_trace.trigger_id != execution.trigger_id
+            or initial_trace.causation_id != execution.causation_id
+            or initial_trace.attempt != execution.attempt
         ):
             raise ValueError("initial trace does not match the execution")
         self._events: list[TraceEvent] = (
@@ -102,15 +109,21 @@ class TraceRecorder:
 
         return self._input_fingerprint
 
+    @property
+    def elapsed_ms(self) -> float:
+        """Return the measured execution latency in milliseconds."""
+
+        return (time.perf_counter() - self._started_at) * 1000.0
+
     def record(
         self, *, stage: str, event_type: str, metadata: dict[str, str] | None = None
     ) -> None:
         """Append one redacted event with a contiguous sequence number."""
 
         safe_metadata = {
-            key: value[:200]
+            key: self._redactor.redact_value(key, value)
             for key, value in (metadata or {}).items()
-            if key and value and not any(part in key.lower() for part in self._BLOCKED_KEY_PARTS)
+            if key and value and not self._redactor.redact_key(key)
         }
         event = TraceEvent(
             event_id=self._id("trace_event"),
@@ -122,7 +135,14 @@ class TraceRecorder:
             metadata=safe_metadata,
         )
         self._events.append(event)
-        self.sink.append(event)
+        _append_safely(
+            self.sink,
+            event,
+            reporter=self.failure_reporter,
+            id_factory=self._id,
+            clock=self._clock,
+            correlation_id=self.execution.correlation_id,
+        )
 
     def record_provider_call(
         self,
@@ -152,6 +172,17 @@ class TraceRecorder:
     def export(self, *, final_status: OutcomeStatus | None = None) -> RunTrace:
         """Build a machine-readable trace bundle without raw input or output."""
 
+        metrics = aggregate_metrics(
+            execution_id=self.execution.execution_id,
+            correlation_id=self.execution.correlation_id,
+            agent_id=self.execution.agent_id,
+            agent_version=self.execution.agent_version,
+            attempt=self.execution.attempt,
+            execution_latency_ms=self.elapsed_ms,
+            provider_calls=self._provider_calls,
+            tool_executions=self._tool_executions,
+            cost_model=self._cost_model,
+        )
         return RunTrace(
             trace_id=self._id("trace"),
             execution_id=self.execution.execution_id,
@@ -166,12 +197,43 @@ class TraceRecorder:
             delegation_id=self.execution.delegation_id,
             delegation_depth=self.execution.delegation_depth,
             delegation_path=self.execution.delegation_path,
+            event_id=self.execution.event_id,
+            trigger_id=self.execution.trigger_id,
+            causation_id=self.execution.causation_id,
+            attempt=self.execution.attempt,
             events=deepcopy(self._events),
             provider_calls=deepcopy(self._provider_calls),
             policy_decisions=deepcopy(self._policy_decisions),
             tool_executions=deepcopy(self._tool_executions),
+            metrics=metrics,
             final_status=final_status,
             generated_at=self._clock(),
+        )
+
+
+def _append_safely(
+    sink: TraceSink,
+    event: TraceEvent,
+    *,
+    reporter: ObservabilityFailureReporter,
+    id_factory: Callable[[str], str],
+    clock: Callable[[], datetime],
+    correlation_id: str,
+) -> None:
+    """Persist one trace event without letting a sink failure abort execution."""
+
+    try:
+        sink.append(event)
+    except Exception as exc:  # noqa: BLE001 - observability persistence is best effort.
+        report_observability_failure(
+            reporter,
+            id_factory=id_factory,
+            clock=clock,
+            sink=sink,
+            operation="trace_append",
+            execution_id=event.execution_id,
+            correlation_id=correlation_id,
+            error=exc,
         )
 
 

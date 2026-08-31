@@ -46,12 +46,18 @@ class DeterministicProvider:
         provider_id: str = "deterministic",
         provider_version: str = "1.0.0",
         model: str = "deterministic-model",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
     ) -> None:
+        if input_tokens < 0 or output_tokens < 0:
+            raise ValueError("token counts must not be negative")
         self.tool_id = tool_id
         self.argument_builder = argument_builder
         self.provider_id = provider_id
         self.provider_version = provider_version
         self.model = model
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
 
     def interpret(
         self,
@@ -171,6 +177,9 @@ class DeterministicProvider:
             provider_version=self.provider_version,
             model=self.model,
             request_id=request_id,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            total_tokens=self.input_tokens + self.output_tokens,
         )
 
 
