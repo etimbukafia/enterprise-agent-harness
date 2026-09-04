@@ -33,6 +33,12 @@ class ContextCompiler:
     def __init__(self, config: RuntimeConfig | None = None) -> None:
         self.config = config or RuntimeConfig()
 
+    @classmethod
+    def minimum_configured_required_characters(cls, prompt: PromptDefinition) -> int:
+        """Return the minimum budget for policy, prompt, and one input character."""
+
+        return len(cls._POLICY_TEXT) + len(cls._prompt_content(prompt)) + 1
+
     def compile(
         self,
         *,
@@ -93,10 +99,7 @@ class ContextCompiler:
                     block_type=ContextBlockType.PROMPT,
                     trust=ContextTrust.TRUSTED,
                     source="configured_prompt",
-                    content=(
-                        f"prompt_id={prompt.prompt_id}@{prompt.version}; "
-                        f"purpose={prompt.purpose}; instructions={prompt.instructions}"
-                    ),
+                    content=self._prompt_content(prompt),
                     priority=88,
                 )
             )
@@ -203,13 +206,22 @@ class ContextCompiler:
         ]
         optional = [block for block in blocks if block not in required]
         required_size = sum(len(block.content) for block in required)
+        input_block = next(
+            block for block in required if block.block_type == ContextBlockType.INPUT
+        )
+        non_input_required_size = required_size - len(input_block.content)
         dropped: list[str] = []
-        if required_size > budget:
-            input_block = next(
-                block for block in required if block.block_type == ContextBlockType.INPUT
+        if non_input_required_size + 1 > budget:
+            required_ids = ", ".join(
+                block.block_id for block in required if block is not input_block
             )
-            fixed_size = required_size - len(input_block.content)
-            remaining = max(1, budget - fixed_size)
+            raise ValueError(
+                "non-droppable context exceeds max_context_characters: "
+                f"required_blocks={required_ids}; "
+                f"minimum_characters={non_input_required_size + 1}; limit={budget}"
+            )
+        if required_size > budget:
+            remaining = budget - non_input_required_size
             truncated = input_block.model_copy(update={"content": input_block.content[:remaining]})
             required = [
                 truncated if block.block_id == input_block.block_id else block for block in required
@@ -228,6 +240,13 @@ class ContextCompiler:
         order = {block.block_id: index for index, block in enumerate(blocks)}
         selected.sort(key=lambda block: order[block.block_id])
         return selected, dropped
+
+    @staticmethod
+    def _prompt_content(prompt: PromptDefinition) -> str:
+        return (
+            f"prompt_id={prompt.prompt_id}@{prompt.version}; "
+            f"purpose={prompt.purpose}; instructions={prompt.instructions}"
+        )
 
     @staticmethod
     def _block(

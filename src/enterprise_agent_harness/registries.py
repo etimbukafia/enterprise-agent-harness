@@ -570,6 +570,22 @@ class SkillRegistry:
             descriptors.append(tool.descriptor)
         return sorted(descriptors, key=lambda item: (item.tool_id, item.version))
 
+    def skills_using_tool(
+        self,
+        tool_id: str,
+        version: str,
+        *,
+        include_inactive: bool = False,
+    ) -> BuiltinList[SkillDefinition]:
+        """Return skills that declare one exact tool dependency."""
+
+        reference = (tool_id, version)
+        return [
+            skill
+            for skill in self.list(include_inactive=include_inactive)
+            if any((item.component_id, item.version) == reference for item in skill.tool_refs)
+        ]
+
     def validate(self, skill_id: str, version: str) -> SkillDefinition:
         """Validate dependencies and move a draft skill to validated."""
 
@@ -1093,26 +1109,40 @@ class AgentRegistry:
         *,
         include_inactive: bool = False,
     ) -> BuiltinList[AgentDefinition]:
-        """Return agents that use one exact tool directly or through a skill."""
+        """Return agents with one exact directly declared executable tool."""
 
         reference = (tool_id, version)
-        skills = self.skills.list(include_inactive=True)
-        skill_tools = {
-            (skill.skill_id, skill.version): {
-                (item.component_id, item.version) for item in skill.tool_refs
-            }
-            for skill in skills
-        }
-        agents: list[AgentDefinition] = []
-        for agent in self.list(include_inactive=include_inactive):
-            direct = any((item.component_id, item.version) == reference for item in agent.tool_refs)
-            linked = any(
-                reference in skill_tools.get((skill.component_id, skill.version), set())
-                for skill in agent.skill_refs
+        return [
+            agent
+            for agent in self.list(include_inactive=include_inactive)
+            if any((item.component_id, item.version) == reference for item in agent.tool_refs)
+        ]
+
+    def agents_with_skill_referencing_tool(
+        self,
+        tool_id: str,
+        version: str,
+        *,
+        include_inactive: bool = False,
+    ) -> BuiltinList[AgentDefinition]:
+        """Return agents whose referenced skills declare one exact dependency."""
+
+        skill_keys = {
+            (skill.skill_id, skill.version)
+            for skill in self.skills.skills_using_tool(
+                tool_id,
+                version,
+                include_inactive=include_inactive,
             )
-            if direct or linked:
-                agents.append(agent)
-        return agents
+        }
+        return [
+            agent
+            for agent in self.list(include_inactive=include_inactive)
+            if any(
+                (reference.component_id, reference.version) in skill_keys
+                for reference in agent.skill_refs
+            )
+        ]
 
     def agents_using_prompt(
         self,

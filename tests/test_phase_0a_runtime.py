@@ -24,6 +24,7 @@ from enterprise_agent_harness import (
     OutcomeStatus,
     PlanStep,
     PrincipalContext,
+    PromptDefinition,
     RiskLevel,
     RuntimeConfig,
     SafetyFlag,
@@ -121,6 +122,21 @@ def test_source_parity_context_keeps_trust_labels_and_drops_optional_output() ->
     assert blocks["input"].trust == ContextTrust.UNTRUSTED
     assert "tool_output_1" in context.dropped_block_ids
     assert all(block.block_type != ContextBlockType.TOOL_OUTPUT for block in context.blocks)
+
+
+def test_context_rejects_non_droppable_prompt_instead_of_exceeding_budget() -> None:
+    with pytest.raises(ValueError, match="non-droppable context exceeds"):
+        ContextCompiler(RuntimeConfig(max_context_characters=256)).compile(
+            principal=principal(),
+            execution=execution(),
+            input_text="Review the record",
+            prompt=PromptDefinition(
+                prompt_id="oversized-prompt",
+                version="1.0.0",
+                purpose="Review records.",
+                instructions="x" * 1_000,
+            ),
+        )
 
 
 def test_source_parity_memory_is_bounded_and_rejects_instruction_like_values() -> None:

@@ -330,3 +330,81 @@ def test_registry_snapshot_is_versioned_and_contains_exact_dependency_graph() ->
     assert ("tool", "tool", "depends_on") in skill_relations
     assert any(event.operation == "snapshot_created" for event in registry.events)
     assert any(event.operation == "snapshot_created" for event in registry.audit_sink.events)
+
+
+def test_tool_discovery_separates_direct_authority_from_skill_dependencies() -> None:
+    optional_tool_ref = ComponentReference(
+        component_type=ComponentType.TOOL,
+        component_id="lookup_customer_history",
+        version="1.0.0",
+    )
+    tools = ToolRegistry(
+        [
+            read_tool(),
+            replace(read_tool(), tool_id="lookup_customer_history"),
+        ]
+    )
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="records-prompt",
+                version="1.0.0",
+                purpose="Review records.",
+                instructions="Use the record review skill.",
+            )
+        ]
+    )
+    skills = SkillRegistry(tools=tools)
+    skills.register(skill())
+    skills.register(
+        SkillDefinition(
+            skill_id="record-history",
+            version="1.0.0",
+            name="Record history",
+            description="Review customer history.",
+            supported_operations=("read",),
+            supported_intents=("review_history",),
+            supported_languages=("en",),
+            optional_tool_refs=(optional_tool_ref,),
+            risk_level=RiskLevel.LOW,
+            lifecycle=AgentLifecycleStatus.ACTIVE,
+        )
+    )
+    registry = AgentRegistry(
+        prompts=prompts,
+        skills=skills,
+        tools=tools,
+        policies=[active_policy()],
+    )
+    direct_agent = agent()
+    registry.register(direct_agent)
+    registry.activate(direct_agent.agent_id, direct_agent.version)
+    dependency_only_agent = agent(agent_id="history-agent").model_copy(
+        update={
+            "skill_refs": [
+                ComponentReference(
+                    component_type=ComponentType.SKILL,
+                    component_id="record-history",
+                    version="1.0.0",
+                )
+            ],
+            "tool_refs": [],
+            "lifecycle": AgentLifecycleStatus.ACTIVE,
+        }
+    )
+    registry.register(dependency_only_agent)
+
+    assert [item.agent_id for item in registry.agents_using_tool("records-read", "1.0.0")] == [
+        "records-agent"
+    ]
+    assert registry.agents_using_tool("lookup_customer_history", "1.0.0") == []
+    assert [
+        item.skill_id for item in skills.skills_using_tool("lookup_customer_history", "1.0.0")
+    ] == ["record-history"]
+    assert [
+        item.agent_id
+        for item in registry.agents_with_skill_referencing_tool(
+            "lookup_customer_history",
+            "1.0.0",
+        )
+    ] == ["history-agent"]

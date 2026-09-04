@@ -139,6 +139,11 @@ grant execution authority. An agent must declare each exact executable tool in
 and approval checks before invocation. Required skill tools block activation;
 optional skill tools may be unavailable without blocking the skill.
 
+`AgentRegistry.agents_using_tool()` reports only direct executable tool
+references. Use `SkillRegistry.skills_using_tool()` or
+`AgentRegistry.agents_with_skill_referencing_tool()` when the query is about
+skill dependencies.
+
 `AgentFactory.validate()` is read-only. `build(..., dry_run=True)` resolves and
 returns a manifest without registering or constructing a runtime. An active
 build registers the exact definition and creates `BuiltAgent`; standard
@@ -148,6 +153,10 @@ sets `requires_approval=True` or a matching active allow policy rule requires
 approval. `approval_requirements` metadata alone is insufficient. Without an
 approval service, the runtime returns `escalated` and does not call the
 handler.
+
+Factory validation rejects a prompt when the configured non-droppable context
+cannot fit within `RuntimeConfig.max_context_characters`. The runtime may
+truncate untrusted input to fit. It never truncates a configured prompt.
 
 `BuiltAgent.execute()` checks the manifest digest before provider execution,
 then uses the private build-time authority snapshot for agent identity, tool

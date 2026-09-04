@@ -21,6 +21,7 @@ from enterprise_agent_harness import (
     FactoryAuthorizationError,
     FactoryDependencyError,
     FactoryTemplateError,
+    FactoryValidationError,
     InMemoryStateStore,
     ListAuditSink,
     ListTraceSink,
@@ -110,13 +111,18 @@ def active_policy() -> PolicyDefinition:
     )
 
 
-def make_factory() -> tuple[AgentFactory, AgentRegistry, ListTraceSink]:
+def make_factory(
+    *,
+    prompt: PromptDefinition | None = None,
+    provider: Any | None = None,
+) -> tuple[AgentFactory, AgentRegistry, ListTraceSink]:
     tools = ToolRegistry([read_tool()])
     skills = SkillRegistry(tools=tools)
     skills.register(active_skill())
     prompts = PromptRegistry(
         [
-            PromptDefinition(
+            prompt
+            or PromptDefinition(
                 prompt_id="records-prompt",
                 version="1.0.0",
                 purpose="Review records safely.",
@@ -133,7 +139,9 @@ def make_factory() -> tuple[AgentFactory, AgentRegistry, ListTraceSink]:
     traces = ListTraceSink()
     factory = AgentFactory(
         agent_registry=registry,
-        providers={("deterministic", "1.0.0"): DeterministicProvider(tool_id="records-read")},
+        providers={
+            ("deterministic", "1.0.0"): provider or DeterministicProvider(tool_id="records-read")
+        },
         runtime_profiles={
             ("bounded-read", "1.0.0"): RuntimeProfile(
                 profile_id="bounded-read",
@@ -201,6 +209,26 @@ def principal() -> Any:
         tenant_id="tenant-factory",
         session_id="session-factory",
     )
+
+
+class CountingProvider(DeterministicProvider):
+    """Record calls so build-time rejection can prove no provider work occurs."""
+
+    def __init__(self) -> None:
+        super().__init__(tool_id="records-read")
+        self.calls = 0
+
+    def interpret(self, *, request: Any = None, **kwargs: Any) -> Any:
+        self.calls += 1
+        return super().interpret(request=request, **kwargs)
+
+    def plan(self, *, request: Any = None, **kwargs: Any) -> Any:
+        self.calls += 1
+        return super().plan(request=request, **kwargs)
+
+    def compose(self, *, request: Any = None, **kwargs: Any) -> Any:
+        self.calls += 1
+        return super().compose(request=request, **kwargs)
 
 
 def test_factory_resolves_exact_components_registers_and_runs_agent() -> None:
@@ -275,6 +303,32 @@ def test_factory_rejects_missing_dependencies_and_invalid_templates() -> None:
     )
     with pytest.raises(FactoryTemplateError, match="requires a write or action tool"):
         factory.validate(invalid_action)
+
+
+def test_factory_rejects_oversized_required_prompt_before_provider_calls() -> None:
+    provider = CountingProvider()
+    factory, _registry, _traces = make_factory(
+        prompt=PromptDefinition(
+            prompt_id="records-prompt",
+            version="1.0.0",
+            purpose="Review records safely.",
+            instructions="x" * 20_000,
+        ),
+        provider=provider,
+    )
+    oversized = config("oversized-prompt-agent").model_copy(
+        update={
+            "runtime_profile": None,
+            "runtime_limits": RuntimeConfig(max_context_characters=12_000),
+        }
+    )
+
+    with pytest.raises(FactoryValidationError, match="max_context_characters"):
+        factory.validate(oversized)
+    with pytest.raises(FactoryValidationError, match="max_context_characters"):
+        factory.build(oversized)
+
+    assert provider.calls == 0
 
 
 def test_standard_template_helper_preserves_declarative_input() -> None:

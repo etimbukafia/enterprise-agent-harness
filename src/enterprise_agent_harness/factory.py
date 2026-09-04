@@ -48,6 +48,7 @@ from .observability.tracing import TraceSink
 from .providers.base import ProviderAdapter
 from .providers.invocation import ProviderCallPolicy
 from .registries import AgentRegistry, RegistryError
+from .runtime.context import ContextCompiler
 from .runtime.execution import AgentRuntime
 from .state.store import StateStore
 from .tools.definitions import ToolDefinition, ToolInvocationError
@@ -535,6 +536,7 @@ class AgentFactory:
             config.prompt_ref.version,
             require_active=activate,
         )
+        self._validate_context_budget(prompt, runtime_limits)
         skills = tuple(
             self._resolve_skill(
                 reference.component_id,
@@ -741,6 +743,19 @@ class AgentFactory:
             raise RuntimeAuthorizationError(
                 f"agent or dependency is not active: {agent_id}@{agent_version}"
             ) from exc
+
+    @staticmethod
+    def _validate_context_budget(
+        prompt: PromptDefinition,
+        runtime_limits: RuntimeConfig,
+    ) -> None:
+        minimum = ContextCompiler.minimum_configured_required_characters(prompt)
+        limit = runtime_limits.max_context_characters
+        if minimum > limit:
+            raise FactoryValidationError(
+                "configured prompt cannot fit within max_context_characters: "
+                f"minimum required characters={minimum}; limit={limit}"
+            )
 
     @staticmethod
     def _validate_template(

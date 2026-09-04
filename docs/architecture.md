@@ -253,6 +253,11 @@ read-only copies, version listing, metadata search, lifecycle changes, and
 audited snapshots. Exact versions are immutable; replacement means registering
 a new version.
 
+`AgentRegistry.agents_using_tool()` reports direct executable authority only.
+`SkillRegistry.skills_using_tool()` and
+`AgentRegistry.agents_with_skill_referencing_tool()` report dependency
+relationships without implying execution authority.
+
 An active agent may register or resolve only when every exact dependency is
 active. A validated agent may reference validated or active dependencies. Exact
 active agent resolution repeats the dependency checks, so suspending a
