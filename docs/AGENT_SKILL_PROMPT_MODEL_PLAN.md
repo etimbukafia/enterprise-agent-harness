@@ -1,6 +1,6 @@
 # Enterprise Agent Harness Agent, Skill, Prompt, and Tool Plan
 
-Status: proposed implementation plan
+Status: implemented
 
 ## 1. Goal
 
@@ -150,15 +150,15 @@ Freeze the new artifact semantics before changing public contracts.
 
 ## Tasks
 
-- [ ] Add an ADR for the agent, skill, prompt, and tool model.
-- [ ] Define `Agent`, `Skill`, `Prompt`, `Tool`, and `Policy` in one canonical document.
-- [ ] Record that `Skill` replaces the existing `Capability` term.
-- [ ] Record that the migration is forward-only during 0.x development.
-- [ ] Record that no permanent `Capability` compatibility layer will remain.
-- [ ] Record that prompt content does not grant runtime authority.
-- [ ] Record that skill metadata does not grant runtime authority.
-- [ ] Record that exact versions remain immutable.
-- [ ] Create a migration matrix for public types, fields, registry names, snapshot edges, docs, tests, and examples.
+- [x] Add an ADR for the agent, skill, prompt, and tool model.
+- [x] Define `Agent`, `Skill`, `Prompt`, `Tool`, and `Policy` in one canonical document.
+- [x] Record that `Skill` replaces the existing `Capability` term.
+- [x] Record that the migration is forward-only during 0.x development.
+- [x] Record that no permanent `Capability` compatibility layer will remain.
+- [x] Record that prompt content does not grant runtime authority.
+- [x] Record that skill metadata does not grant runtime authority.
+- [x] Record that exact versions remain immutable.
+- [x] Create a migration matrix for public types, fields, registry names, snapshot edges, docs, tests, and examples.
 
 ## Required migration map
 
@@ -218,12 +218,12 @@ An optional tool can enrich a skill but cannot be required for its base validity
 
 ## Tasks
 
-- [ ] Add `SkillDefinition`.
-- [ ] Replace `CapabilityDefinition` usage.
-- [ ] Update serialization and validation.
-- [ ] Update root-package exports.
-- [ ] Add behavior tests for valid and invalid skill contracts.
-- [ ] Remove obsolete capability contract code after migration.
+- [x] Add `SkillDefinition`.
+- [x] Replace `CapabilityDefinition` usage.
+- [x] Update serialization and validation.
+- [x] Update root-package exports.
+- [x] Add behavior tests for valid and invalid skill contracts.
+- [x] Remove obsolete capability contract code after migration.
 
 ## Exit criteria
 
@@ -251,12 +251,12 @@ Provide immutable versioned skill discovery and lifecycle management.
 
 ## Tasks
 
-- [ ] Replace `CapabilityRegistry` with `SkillRegistry`.
-- [ ] Support register, validate, activate, suspend, deprecate, retire, resolve, list, search, and snapshot behavior.
-- [ ] Validate required exact tool dependencies.
-- [ ] Preserve deterministic listing and snapshot ordering.
-- [ ] Update registry audit events.
-- [ ] Add public-boundary tests for lifecycle and dependency behavior.
+- [x] Replace `CapabilityRegistry` with `SkillRegistry`.
+- [x] Support register, validate, activate, suspend, deprecate, retire, resolve, list, search, and snapshot behavior.
+- [x] Validate required exact tool dependencies.
+- [x] Preserve deterministic listing and snapshot ordering.
+- [x] Update registry audit events.
+- [x] Add public-boundary tests for lifecycle and dependency behavior.
 
 ## Exit criteria
 
@@ -314,11 +314,11 @@ A prompt cannot:
 
 ## Tasks
 
-- [ ] Add `PromptDefinition`.
-- [ ] Add validation for identity, version, lifecycle, and instruction content.
-- [ ] Export the contract through the public package API.
-- [ ] Add deterministic serialization tests.
-- [ ] Add tests that show prompt content cannot alter authority contracts.
+- [x] Add `PromptDefinition`.
+- [x] Add validation for identity, version, lifecycle, and instruction content.
+- [x] Export the contract through the public package API.
+- [x] Add deterministic serialization tests.
+- [x] Add tests that show prompt content cannot alter authority contracts.
 
 ## Exit criteria
 
@@ -334,14 +334,14 @@ Provide immutable prompt discovery, lifecycle, and snapshot support.
 
 ## Tasks
 
-- [ ] Add `PromptRegistry`.
-- [ ] Use the same immutable exact-version rules as other registries.
-- [ ] Support lifecycle operations.
-- [ ] Support deterministic list and metadata search.
-- [ ] Support exact resolution.
-- [ ] Add registry audit events.
-- [ ] Add prompt records to registry snapshots where applicable.
-- [ ] Add public-boundary tests.
+- [x] Add `PromptRegistry`.
+- [x] Use the same immutable exact-version rules as other registries.
+- [x] Support lifecycle operations.
+- [x] Support deterministic list and metadata search.
+- [x] Support exact resolution.
+- [x] Add registry audit events.
+- [x] Add prompt records to registry snapshots where applicable.
+- [x] Add public-boundary tests.
 
 ## Important rule
 
@@ -389,11 +389,11 @@ Do not replace stronger typed references inside runtime-critical contracts when 
 
 ## Tasks
 
-- [ ] Add `ComponentType`.
-- [ ] Add immutable `ComponentReference`.
-- [ ] Export both through the public API.
-- [ ] Use the reference in snapshot, audit, or external integration boundaries where it reduces ambiguity.
-- [ ] Add serialization tests.
+- [x] Add `ComponentType`.
+- [x] Add immutable `ComponentReference`.
+- [x] Export both through the public API.
+- [x] Use the reference in snapshot, audit, or external integration boundaries where it reduces ambiguity.
+- [x] Add serialization tests.
 
 ## Exit criteria
 
@@ -430,14 +430,14 @@ Do not add a second prompt field after `prompt_ref` becomes authoritative.
 
 ## Tasks
 
-- [ ] Replace `capability_refs` with `skill_refs`.
-- [ ] Add an exact `prompt_ref`.
-- [ ] Remove embedded behavioral instruction fields that duplicate `PromptDefinition`, after migration is complete.
-- [ ] Update `AgentConfig`.
-- [ ] Update `AgentVersion` and related contracts only where required.
-- [ ] Update validation errors with clear skill and prompt terminology.
-- [ ] Update public API exports.
-- [ ] Add contract tests for exact prompt, skill, tool, and policy references.
+- [x] Replace `capability_refs` with `skill_refs`.
+- [x] Add an exact `prompt_ref`.
+- [x] Remove embedded behavioral instruction fields that duplicate `PromptDefinition`, after migration is complete.
+- [x] Update `AgentConfig`.
+- [x] Update `AgentVersion` and related contracts only where required.
+- [x] Update validation errors with clear skill and prompt terminology.
+- [x] Update public API exports.
+- [x] Add contract tests for exact prompt, skill, tool, and policy references.
 
 ## Exit criteria
 
@@ -480,13 +480,13 @@ A snapshot must make it possible to answer:
 
 ## Tasks
 
-- [ ] Update `RegistryDependency` semantics.
-- [ ] Add prompt records to snapshots.
-- [ ] Replace capability edges with skill edges.
-- [ ] Preserve deterministic ordering.
-- [ ] Update snapshot revision calculation where required.
-- [ ] Update audit evidence.
-- [ ] Add deterministic snapshot tests.
+- [x] Update `RegistryDependency` semantics.
+- [x] Add prompt records to snapshots.
+- [x] Replace capability edges with skill edges.
+- [x] Preserve deterministic ordering.
+- [x] Update snapshot revision calculation where required.
+- [x] Update audit evidence.
+- [x] Add deterministic snapshot tests.
 
 ## Exit criteria
 
@@ -519,12 +519,12 @@ A prompt or skill must never bypass permission, policy, or approval checks.
 
 ## Tasks
 
-- [ ] Update `AgentFactory.validate()`.
-- [ ] Update dry-run manifest resolution.
-- [ ] Update active build behavior.
-- [ ] Update dependency error messages.
-- [ ] Ensure suspended prompt or skill dependencies stop new governed executions where live-registry rules require this.
-- [ ] Add factory tests through public build and execute boundaries.
+- [x] Update `AgentFactory.validate()`.
+- [x] Update dry-run manifest resolution.
+- [x] Update active build behavior.
+- [x] Update dependency error messages.
+- [x] Ensure suspended prompt or skill dependencies stop new governed executions where live-registry rules require this.
+- [x] Add factory tests through public build and execute boundaries.
 
 ## Exit criteria
 
@@ -566,13 +566,13 @@ Do not duplicate complete registry records when exact references and a snapshot 
 
 ## Tasks
 
-- [ ] Add prompt provenance.
-- [ ] Replace capability provenance with skill provenance.
-- [ ] Preserve exact tool and policy provenance.
-- [ ] Update manifest digest calculation.
-- [ ] Preserve tamper checks.
-- [ ] Update `BuiltAgent` validation.
-- [ ] Add manifest integrity tests.
+- [x] Add prompt provenance.
+- [x] Replace capability provenance with skill provenance.
+- [x] Preserve exact tool and policy provenance.
+- [x] Update manifest digest calculation.
+- [x] Preserve tamper checks.
+- [x] Update `BuiltAgent` validation.
+- [x] Add manifest integrity tests.
 
 ## Exit criteria
 
@@ -602,12 +602,12 @@ Do not infer skill selection only because one of its tools executed.
 
 ## Tasks
 
-- [ ] Add prompt version provenance to trace metadata where appropriate.
-- [ ] Add skill-version availability provenance.
-- [ ] Define explicit skill-selection evidence only if supported by the execution path.
-- [ ] Keep trace schemas provider-neutral.
-- [ ] Keep private reasoning out of traces.
-- [ ] Add trace export tests.
+- [x] Add prompt version provenance to trace metadata where appropriate.
+- [x] Add skill-version availability provenance.
+- [x] Define explicit skill-selection evidence only if supported by the execution path.
+- [x] Keep trace schemas provider-neutral.
+- [x] Keep private reasoning out of traces.
+- [x] Add trace export tests.
 
 ## Exit criteria
 
@@ -641,11 +641,11 @@ They do not select a production deployment.
 
 ## Tasks
 
-- [ ] Add focused graph queries where current registry data can answer them directly.
-- [ ] Keep exact versions explicit.
-- [ ] Return deterministic results.
-- [ ] Return copies, not mutable registry state.
-- [ ] Add public-boundary tests.
+- [x] Add focused graph queries where current registry data can answer them directly.
+- [x] Keep exact versions explicit.
+- [x] Return deterministic results.
+- [x] Return copies, not mutable registry state.
+- [x] Add public-boundary tests.
 
 ## Exit criteria
 
@@ -663,28 +663,28 @@ Complete the terminology and contract migration with one architecture.
 
 Update:
 
-- [ ] contracts;
-- [ ] registries;
-- [ ] factory;
-- [ ] runtime integration;
-- [ ] composition and delegation where they reference capabilities;
-- [ ] traces and audit records;
-- [ ] state or manifest serialization where relevant;
-- [ ] package exports.
+- [x] contracts;
+- [x] registries;
+- [x] factory;
+- [x] runtime integration;
+- [x] composition and delegation where they reference capabilities;
+- [x] traces and audit records;
+- [x] state or manifest serialization where relevant;
+- [x] package exports.
 
 ## Documentation migration
 
 Update:
 
-- [ ] `README.md`;
-- [ ] `docs/architecture.md`;
-- [ ] `docs/public-api.md`;
-- [ ] `docs/quickstart.md`;
-- [ ] `docs/product-brief.md`;
-- [ ] `docs/production-extension-points.md`;
-- [ ] architecture diagrams;
-- [ ] relevant ADRs;
-- [ ] `docs/BUILD_PLAN.md`.
+- [x] `README.md`;
+- [x] `docs/architecture.md`;
+- [x] `docs/public-api.md`;
+- [x] `docs/quickstart.md`;
+- [x] `docs/product-brief.md`;
+- [x] `docs/production-extension-points.md`;
+- [x] architecture diagrams;
+- [x] relevant ADRs;
+- [x] `docs/BUILD_PLAN.md`.
 
 Do not rewrite historical ADR decisions silently.
 
@@ -694,14 +694,14 @@ Add a new ADR that supersedes capability terminology where required.
 
 Update:
 
-- [ ] factory examples;
-- [ ] composition examples;
-- [ ] approval examples if agent construction changes;
-- [ ] registry tests;
-- [ ] factory tests;
-- [ ] runtime tests;
-- [ ] trace tests;
-- [ ] public API tests.
+- [x] factory examples;
+- [x] composition examples;
+- [x] approval examples if agent construction changes;
+- [x] registry tests;
+- [x] factory tests;
+- [x] runtime tests;
+- [x] trace tests;
+- [x] public API tests.
 
 ## Remove migration residue
 

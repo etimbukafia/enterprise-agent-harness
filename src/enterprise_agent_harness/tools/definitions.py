@@ -12,6 +12,8 @@ from pydantic import BaseModel, ValidationError
 
 from ..contracts import (
     AgentLifecycleStatus,
+    ComponentReference,
+    ComponentType,
     ExecutionContext,
     RiskLevel,
     ToolDescriptor,
@@ -84,7 +86,7 @@ class ToolDefinition:
     retryable: bool = False
     max_attempts: int = 1
     retry_backoff_seconds: float = 0.0
-    dependencies: tuple[str, ...] = ()
+    dependencies: tuple[ComponentReference, ...] = ()
     allowed_environments: tuple[str, ...] = ()
     retry_policy: ToolRetryPolicy | None = None
 
@@ -92,6 +94,14 @@ class ToolDefinition:
         object.__setattr__(self, "kind", ToolKind(self.kind))
         object.__setattr__(self, "risk_level", RiskLevel(self.risk_level))
         object.__setattr__(self, "lifecycle", AgentLifecycleStatus(self.lifecycle))
+        dependencies = tuple(self.dependencies)
+        if any(
+            not isinstance(reference, ComponentReference)
+            or reference.component_type != ComponentType.TOOL
+            for reference in dependencies
+        ):
+            raise TypeError("tool dependencies must be exact tool ComponentReference values")
+        object.__setattr__(self, "dependencies", dependencies)
         for name in (
             "required_permissions",
             "sensitive_argument_fields",
@@ -123,8 +133,6 @@ class ToolDefinition:
             raise ValueError("retry_backoff_seconds must be between zero and sixty")
         if len(self.dependencies) != len(set(self.dependencies)):
             raise ValueError("dependencies must not contain duplicates")
-        if any(not dependency.strip() for dependency in self.dependencies):
-            raise ValueError("dependencies must not contain empty values")
         if len(self.allowed_environments) != len(set(self.allowed_environments)):
             raise ValueError("allowed_environments must not contain duplicates")
         if any(not environment.strip() for environment in self.allowed_environments):
@@ -159,7 +167,7 @@ class ToolDefinition:
             retryable=self.retry_enabled,
             max_attempts=self.retry_max_attempts,
             retry_backoff_seconds=self.retry_backoff,
-            dependencies=list(self.dependencies),
+            dependencies=[reference.model_copy(deep=True) for reference in self.dependencies],
             allowed_environments=list(self.allowed_environments),
         )
 

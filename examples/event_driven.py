@@ -17,23 +17,23 @@ from enterprise_agent_harness import (
     EventTrigger,
 )
 
-from ._support import agent_config, allow_policy, capability, make_factory, principal, read_tool
+from ._support import agent_config, allow_policy, make_factory, principal, read_tool, skill
 
 
 def main() -> None:
     """Handle an event and submit the same event again."""
 
     tool = read_tool()
-    factory, _tools, _capabilities, _traces, _audits = make_factory(
+    factory, _tools, _skills, _traces, _audits = make_factory(
         [tool],
-        capabilities=[capability(tool.tool_id)],
+        skills=[skill(tool.tool_id)],
         policies=[allow_policy(tool.tool_id)],
     )
     agent = factory.build(
         agent_config(
             "billing-event-agent",
             tool_id=tool.tool_id,
-            capability_ids=("records-review",),
+            skill_ids=("records-review",),
             policy_ids=("records-policy",),
         )
     )
@@ -57,8 +57,8 @@ def main() -> None:
         agent_id=agent.manifest.agent.agent_id,
         agent_version=agent.manifest.agent.version,
     )
-    tool_ids = [item.tool_id for item in agent.manifest.tools]
-    tool_versions = [f"{item.tool_id}@{item.version}" for item in agent.manifest.tools]
+    tool_ids = [item.component_id for item in agent.manifest.tool_refs]
+    tool_versions = [f"{item.component_id}@{item.version}" for item in agent.manifest.tool_refs]
 
     def handle(
         principal,

@@ -63,7 +63,7 @@ This is a code and architecture fork. It is not a literal GitHub fork.
 | `context.py` | `runtime/context.py` | Reuse trusted/untrusted context concepts |
 | `state.py` | `state/` | Generalize |
 | `memory.py` | `memory/` | Redesign as optional memory strategies |
-| `skills.py` | `capabilities/` | Evolve into capability contracts |
+| `skills.py` | `skills/`, `contracts.py`, `registries.py` | Evolve into first-class skill contracts |
 | `verification.py` | `verification/` | Generalize beyond citations and response sections |
 | `recovery.py` | `runtime/outcomes.py` | Redesign around enterprise-agent outcomes |
 | `harness.py` | `runtime/` | Redesign around general enterprise execution |
@@ -94,7 +94,7 @@ Define the system boundaries, invariants, and package structure before implement
 - [x] Define the trust model: model output is untrusted proposal data, application policy is authoritative.
 - [x] Define the execution model for read tools, write tools, background actions, and approval-gated actions.
 - [x] Define the agent lifecycle: draft, validated, active, suspended, retired.
-- [x] Define versioning rules for agents, tools, capabilities, policies, and runtime contracts.
+- [x] Define versioning rules for agents, prompts, skills, tools, policies, and runtime contracts.
 - [x] Decide which concepts are runtime-owned versus consumer-owned.
 - [x] Define the minimum stable public API.
 - [x] Create ADRs for provider neutrality, policy ownership, registry design, and trace contracts.
@@ -118,7 +118,7 @@ Create the typed contracts that every other module depends on.
 ### Tasks
 - [x] Implement `AgentDefinition`.
 - [x] Implement `AgentVersion` and immutable version identity.
-- [x] Implement `CapabilityDefinition`.
+- [x] Implement `PromptDefinition` and `SkillDefinition`.
 - [x] Implement `ToolDefinition` with typed input/output schemas.
 - [x] Implement `PolicyDefinition`.
 - [x] Implement `PrincipalContext`.
@@ -301,20 +301,20 @@ Support enterprise workflows that outlive a single request.
 
 ---
 
-## Phase 8: Agent Registry and Capability Registry
+## Phase 8: Agent, Prompt, and Skill Registries
 
 Status: complete. Evidence: `registries.py`, `contracts.py`,
 `tests/test_phase_8_registries.py`, and the quality workflow.
 
 ### Objective
-Make agents and their capabilities discoverable and reusable.
+Make agents, prompts, and skills discoverable and reusable.
 
 ### Tasks
 - [x] Implement `AgentRegistry`.
-- [x] Implement `CapabilityRegistry`.
+- [x] Implement `PromptRegistry` and `SkillRegistry`.
 - [x] Store goal, supported intents, tools, policies, risk level, language support, owner, version, status, and performance metadata.
 - [x] Support activate, suspend, deprecate, and retire lifecycle operations.
-- [x] Add capability search.
+- [x] Add prompt and skill search.
 - [x] Add compatibility checks between agents, tools, and policies.
 - [x] Add dependency graphs.
 - [x] Add registry snapshots for deterministic planning.
@@ -322,7 +322,7 @@ Make agents and their capabilities discoverable and reusable.
 - [x] Add tests for duplicate, incompatible, and stale registrations.
 
 ### Exit criteria
-- [x] A consumer can ask what capabilities already exist without inspecting code.
+- [x] A consumer can ask what prompts and skills already exist without inspecting code.
 - [x] Registry state is versioned and auditable.
 
 ---
@@ -360,7 +360,7 @@ contracts in `contracts.py`, runtime trace/audit propagation, and public-boundar
 tests in `tests/test_phase_10_composition.py`.
 
 ### Objective
-Allow multiple agents and capabilities to cooperate without unrestricted peer authority.
+Allow multiple agents and skills to cooperate without unrestricted peer authority.
 
 ### Tasks
 - [x] Define delegation contracts.
@@ -430,6 +430,37 @@ Make every enterprise agent execution inspectable and measurable.
 ### Exit criteria
 - Every important runtime decision can be reconstructed from structured evidence.
 - Consumers can impose cost and execution budgets.
+
+---
+
+## Phase 12A: Agent, Prompt, and Skill Artifact Model
+
+Status: complete. Evidence: `contracts.py`, `registries.py`, `factory.py`,
+runtime provenance fields, `docs/adr/0013-agent-skill-prompt-artifact-model.md`,
+examples, and public-boundary tests.
+
+### Objective
+
+Make behavioral prompts and reusable skills first-class, typed, versioned,
+discoverable, and auditable without allowing skill metadata to grant tools.
+
+### Tasks
+
+- [x] Define `PromptDefinition`, `SkillDefinition`, `ComponentType`, and `ComponentReference`.
+- [x] Replace agent behavior fields with exact `prompt_ref`, `skill_refs`, `tool_refs`, and `policy_refs`.
+- [x] Add dedicated prompt and skill registries with lifecycle, search, safe-copy, and audit behavior.
+- [x] Validate required skill tools, tolerate absent optional skill tools, and enforce risk ceilings.
+- [x] Emit full deterministic agent, prompt, skill, tool, policy, and dependency snapshots.
+- [x] Include exact artifact provenance in manifests, traces, and audit events without raw prompt leakage.
+- [x] Remove the retired vocabulary and compatibility shims from active source, tests, examples, and exports.
+- [x] Add a superseding ADR and migration matrix while retaining historical ADRs unchanged.
+
+### Exit criteria
+
+- [x] Factory builds resolve one exact prompt, reusable skills, explicit tools, and policies.
+- [x] Skills never expand runtime authority beyond an agent's explicit tool references.
+- [x] Lifecycle changes to a prompt, skill, tool, or policy stop dependent active agents.
+- [x] Snapshot, manifest, trace, discovery, and documentation contracts agree.
 
 ---
 
@@ -558,7 +589,7 @@ A reasonable `v0.1` should prove the following:
 
 - Proven source-runtime and governance concepts have been deliberately ported or rejected with documented migration decisions.
 - A declarative agent can be instantiated by the factory.
-- The agent is resolved from the Agent, Capability, and Tool registries.
+- The agent is resolved from the Agent, Prompt, Skill, and Tool registries.
 - The runtime can execute bounded tool calls.
 - Every tool call is permission-checked.
 - A write action can require human approval.

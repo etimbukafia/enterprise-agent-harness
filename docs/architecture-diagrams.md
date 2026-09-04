@@ -18,6 +18,38 @@ flowchart LR
 
 The provider proposes work. The runtime decides if the tool can run.
 
+## Versioned artifact graph
+
+```mermaid
+flowchart TD
+    A[AgentDefinition] -->|prompt_ref| P[PromptDefinition]
+    A -->|skill_refs| S[SkillDefinition]
+    A -->|tool_refs| T[ToolDefinition]
+    A -->|policy_refs| Y[PolicyDefinition]
+    S -->|required or optional tool refs| T
+    T -->|exact dependencies| T
+    A --> M[ResolvedAgentManifest]
+    M -->|registry_snapshot_id and digest| X[RegistrySnapshot]
+```
+
+The agent's explicit `tool_refs` are the execution ceiling. Skill links
+describe reusable behavior and dependencies; they do not grant a tool.
+Snapshots preserve the exact graph used by factory validation.
+
+## Provenance without prompt leakage
+
+```mermaid
+flowchart LR
+    P[Exact prompt ref] --> R[RunTrace and AuditEvent]
+    S[Exact skill refs] --> R
+    M[Manifest ID, digest, snapshot ID] --> R
+    I[Prompt instructions] --> C[Provider context]
+    C -. excluded from trace .-> R
+```
+
+Trace and audit evidence identifies the prompt and skills without storing
+prompt instructions, raw provider content, or private reasoning by default.
+
 ## Approval pause and resume
 
 ```mermaid

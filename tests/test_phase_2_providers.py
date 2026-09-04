@@ -304,11 +304,11 @@ def test_runtime_records_provider_metadata_in_exported_trace() -> None:
     assert all(call.metadata.latency_ms >= 0 for call in trace.provider_calls)
 
 
-class LegacyMappingProvider:
-    """A Phase 0A-shaped provider used to prove the policy boundary is stable."""
+class MappingProvider:
+    """A request-contract provider that returns an untrusted mapping shape."""
 
-    def plan(self, *, context, execution, capabilities, tools):
-        del context, execution, capabilities, tools
+    def plan(self, *, request):
+        del request
         return {
             "tool_calls": [
                 {
@@ -319,14 +319,14 @@ class LegacyMappingProvider:
             ]
         }
 
-    def compose(self, *, context, execution, plan, tool_results):
-        del context, execution, plan, tool_results
+    def compose(self, *, request):
+        del request
         return {"summary": "done", "confidence": 1.0}
 
 
 def test_swapping_provider_shapes_does_not_change_permission_boundary() -> None:
     outcomes = []
-    for index, provider in enumerate((DeterministicProvider(), LegacyMappingProvider()), start=1):
+    for index, provider in enumerate((DeterministicProvider(), MappingProvider()), start=1):
         called = False
 
         def handler(_context, arguments):

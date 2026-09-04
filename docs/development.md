@@ -32,8 +32,9 @@ The package directories have one responsibility each:
 | `observability/` | Audit, trace, metrics, and redaction boundaries. |
 | `verification/` | Provider-output verification. |
 | `evaluation/` | Stable trace, manifest, test-case, and recorded-replay contracts. |
-| `capabilities/` | Capability contracts and registry export. |
-| `registries.py` | Versioned agent and capability discovery, lifecycle, compatibility, and snapshots. |
+| `prompts/` | Prompt contracts and registry export. |
+| `skills/` | Skill contracts and registry export. |
+| `registries.py` | Versioned agent, prompt, and skill discovery, lifecycle, compatibility, and snapshots. |
 | `factory.py` | Declarative exact-component resolution, runtime profiles, templates, manifests, and agent assembly. |
 | `composition.py` | Runtime-only delegation, parent-child ceilings, composition patterns, depth, cycles, and correlation. |
 | `background/` | Event envelope, trigger, lease, deduplication, and background job runner contracts with deterministic stores. |

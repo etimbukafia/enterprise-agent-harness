@@ -9,11 +9,12 @@ from pydantic import Field
 
 from ..contracts import (
     AgentPlan,
-    CapabilityDefinition,
     CompiledContext,
     ContractModel,
     ExecutionContext,
     OutcomeProposal,
+    PromptDefinition,
+    SkillDefinition,
     ToolDescriptor,
     ToolResult,
 )
@@ -63,11 +64,12 @@ class InterpretationProposal(ContractModel):
 class InterpretationRequest(ContractModel):
     """Provider input for generic request interpretation."""
 
-    schema_version: Literal["agent-interpretation-request.v1"] = "agent-interpretation-request.v1"
+    schema_version: Literal["agent-interpretation-request.v2"] = "agent-interpretation-request.v2"
     request_id: str = Field(min_length=1)
     context: CompiledContext
     execution: ExecutionContext
-    capabilities: list[CapabilityDefinition] = Field(default_factory=list)
+    prompt: PromptDefinition | None = None
+    skills: list[SkillDefinition] = Field(default_factory=list)
     tools: list[ToolDescriptor] = Field(default_factory=list)
 
 
@@ -82,11 +84,12 @@ class InterpretationResponse(ContractModel):
 class PlanningRequest(ContractModel):
     """Provider input for a bounded tool plan."""
 
-    schema_version: Literal["agent-planning-request.v1"] = "agent-planning-request.v1"
+    schema_version: Literal["agent-planning-request.v2"] = "agent-planning-request.v2"
     request_id: str = Field(min_length=1)
     context: CompiledContext
     execution: ExecutionContext
-    capabilities: list[CapabilityDefinition] = Field(default_factory=list)
+    prompt: PromptDefinition | None = None
+    skills: list[SkillDefinition] = Field(default_factory=list)
     tools: list[ToolDescriptor] = Field(default_factory=list)
     interpretation: InterpretationResponse | None = None
 

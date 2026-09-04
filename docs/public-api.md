@@ -2,10 +2,8 @@
 
 Status: accepted baseline through Phase 14.
 
-This document defines the smallest API that later phases must preserve. The
-root package may re-export additional compatibility names during the 0.x
-development period. Code that is not listed here is not a stable integration
-surface.
+This document defines the smallest API that later phases must preserve. Code
+that is not listed here is not a stable integration surface.
 
 ## Contract layer
 
@@ -21,7 +19,10 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.PrincipalContext` | Trusted principal, tenant, and session identity. |
 | `enterprise_agent_harness.ExecutionContext` | Trusted authority and execution limits. |
 | `enterprise_agent_harness.ResourceContext` | Optional application-supplied resource facts for policy checks. |
-| `enterprise_agent_harness.CapabilityDefinition` | Versioned capability metadata. |
+| `enterprise_agent_harness.ComponentType` | Closed set of agent, prompt, skill, tool, and policy artifact kinds. |
+| `enterprise_agent_harness.ComponentReference` | Immutable exact artifact identity and version reference. |
+| `enterprise_agent_harness.PromptDefinition` | Versioned provider-neutral behavioral instructions. |
+| `enterprise_agent_harness.SkillDefinition` | Versioned reusable behavior metadata with required and optional exact tool references. |
 | `enterprise_agent_harness.PolicyDefinition` | Versioned declarative policy metadata. |
 | `enterprise_agent_harness.PolicyRule` | One typed allow or deny policy rule. |
 | `enterprise_agent_harness.PolicyDecision` | Explicit deterministic result of one policy evaluation. |
@@ -40,7 +41,7 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.AgentOutcome` | Runtime-owned final outcome. |
 | `enterprise_agent_harness.ExecutionCheckpoint` | Versioned, owner-bound continuation data for a paused execution. |
 | `enterprise_agent_harness.RegistryDependency` | Exact dependency edge in a registry snapshot. |
-| `enterprise_agent_harness.RegistrySnapshot` | Versioned, deterministic view of agent, capability, tool, policy, and dependency records, including the tool registry revision. |
+| `enterprise_agent_harness.RegistrySnapshot` | Versioned, deterministic view of agent, prompt, skill, tool, policy, and dependency records, including component registry revisions. |
 | `enterprise_agent_harness.ResolvedAgentManifest` | Tamper-evident resolved factory snapshot containing exact agent dependencies and runtime options. |
 | `enterprise_agent_harness.RuntimeProfile` | Reusable versioned runtime-limit profile. |
 | `enterprise_agent_harness.DelegationRequest` / `DelegationResult` | Exact parent-authorized child invocation and auditable result. |
@@ -57,7 +58,8 @@ when the versioning rules in `architecture.md` allow it.
 | `enterprise_agent_harness.ToolUsageMetric` | Per-tool usage for one execution. |
 
 `AgentDefinition` includes supported intents and languages, owner and
-lifecycle metadata, exact capability/tool/policy references, risk level, and
+lifecycle metadata, one exact prompt reference, exact skill/tool/policy
+references, risk level, and
 optional performance metadata. Registry records are immutable by exact
 identity and version; a correction is registered as a new version.
 
@@ -107,14 +109,15 @@ identity and version; a correction is registered as a new version.
 | Import | Purpose |
 | --- | --- |
 | `enterprise_agent_harness.AgentRegistry` | Register, validate, activate, suspend, deprecate, retire, resolve, search, and snapshot agent definitions. |
-| `enterprise_agent_harness.CapabilityRegistry` | Register, validate, activate, suspend, deprecate, retire, resolve, search, and snapshot capability definitions. |
+| `enterprise_agent_harness.PromptRegistry` | Register, validate, activate, suspend, deprecate, retire, resolve, search, and snapshot prompt definitions. |
+| `enterprise_agent_harness.SkillRegistry` | Register, validate, activate, suspend, deprecate, retire, resolve, search, and snapshot skill definitions. |
 | `enterprise_agent_harness.RegistryAuditEvent` | Versioned audit record for registry mutations and snapshots. |
 | `enterprise_agent_harness.RegistryAuditSink` | Application storage boundary for registry audit events. |
 | `enterprise_agent_harness.ListRegistryAuditSink` | Thread-safe in-memory audit sink for local use and tests. |
 | `enterprise_agent_harness.RegistryError` | Base registry lookup and lifecycle error. |
 | `enterprise_agent_harness.DuplicateRegistrationError` | Exact identity/version is already registered. |
 | `enterprise_agent_harness.StaleRegistrationError` | An immutable registered version was targeted for replacement. |
-| `enterprise_agent_harness.IncompatibleRegistrationError` | A referenced tool, capability, or policy is missing, inactive, or exceeds the risk boundary. |
+| `enterprise_agent_harness.IncompatibleRegistrationError` | A referenced prompt, skill, tool, or policy is missing, inactive, or exceeds the risk boundary. |
 | `enterprise_agent_harness.RegistryLifecycleError` | A requested lifecycle transition is not allowed. |
 
 Registry queries return deep copies and therefore cannot mutate registered
@@ -125,10 +128,16 @@ returns stable ordering and exact dependency edges for deterministic planning;
 its ID, timestamp, combined revision, and tool registry revision are retained
 as audit evidence.
 
-An active agent can resolve only while its exact agent, capability, tool, and
-policy dependencies are active. A validated agent may reference validated or
-active dependencies. Active agent resolution repeats the dependency checks, so
-later suspension takes effect for previously built runtimes.
+An active agent can resolve only while its exact agent, prompt, skill, tool,
+and policy dependencies are active. A validated agent may reference validated
+or active dependencies. Active agent resolution repeats the dependency checks,
+so later suspension takes effect for previously built runtimes.
+
+`SkillDefinition` tool references describe reusable behavior only. They never
+grant execution authority. An agent must declare each exact executable tool in
+`tool_refs`; the runtime then applies permission, policy, risk, environment,
+and approval checks before invocation. Required skill tools block activation;
+optional skill tools may be unavailable without blocking the skill.
 
 `AgentFactory.validate()` is read-only. `build(..., dry_run=True)` resolves and
 returns a manifest without registering or constructing a runtime. An active
@@ -269,8 +278,10 @@ durable-execution path.
 `RunTrace.provider_calls` contains normalized provider metadata for each
 successful provider operation. `RunTrace.policy_decisions` contains explicit
 policy results, and `RunTrace.tool_executions` contains redacted handler
-execution summaries. The trace does not contain raw provider prompts,
-response content, idempotency keys, or tool output.
+execution summaries. `RunTrace` records the exact manifest, registry snapshot,
+prompt reference, and skill references used for the run. The trace does not
+contain prompt instructions, private provider reasoning, raw response content,
+idempotency keys, or tool output.
 
 `RunTrace` also exposes `correlation_id`, `parent_execution_id`,
 `delegation_id`, `delegation_depth`, and `delegation_path` for reconstructing a
@@ -278,7 +289,8 @@ composed execution tree.
 
 `export_run_trace` and `export_agent_manifest` return JSON-safe dictionaries.
 Their source contracts have explicit schema versions. The manifest export keeps
-the resolved agent, component, tool, policy, profile, and digest identities.
+the resolved agent, exact prompt/skill/tool/policy references, provider and
+runtime profiles, registry snapshot identity, and tamper-evident digest.
 
 An external test system implements `TestCaseAdapter`. It returns an
 `EvaluationExecutionInput`. `execute_test_case` then runs a `BuiltAgent` and

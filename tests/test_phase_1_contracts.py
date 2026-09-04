@@ -13,7 +13,8 @@ from enterprise_agent_harness import (
     AgentVersion,
     ApprovalDecision,
     ApprovalRequest,
-    CapabilityDefinition,
+    ComponentReference,
+    ComponentType,
     ExecutionContext,
     OutcomeStatus,
     PolicyDefinition,
@@ -23,10 +24,10 @@ from enterprise_agent_harness import (
     ProviderProfile,
     RiskLevel,
     RuntimeConfig,
+    SkillDefinition,
     ToolCall,
     ToolDefinition,
     ToolKind,
-    VersionReference,
 )
 from enterprise_agent_harness.errors import (
     ErrorCode,
@@ -51,9 +52,32 @@ def test_agent_definition_round_trips_and_agent_version_is_immutable() -> None:
     definition = AgentDefinition(
         identity=AgentVersion(agent_id="records", version="1.2.3"),
         goal="Review and update approved records.",
-        capabilities=[VersionReference(component_id="record-review", version="1.0.0")],
-        allowed_tools=[VersionReference(component_id="records-read", version="1.0.0")],
-        policies=[VersionReference(component_id="records-policy", version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id="record-review",
+                version="1.0.0",
+            )
+        ],
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            )
+        ],
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id="records-policy",
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
@@ -84,6 +108,11 @@ def test_agent_definition_round_trips_and_agent_version_is_immutable() -> None:
         agent_id="records",
         version="1.2.3",
         goal="Review and update approved records.",
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
+        ),
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
@@ -93,7 +122,7 @@ def test_agent_definition_round_trips_and_agent_version_is_immutable() -> None:
     assert flat_definition.identity == definition.identity
 
 
-def test_policy_capability_and_tool_contracts_round_trip_with_typed_metadata() -> None:
+def test_policy_skill_and_tool_contracts_round_trip_with_typed_metadata() -> None:
     policy = PolicyDefinition(
         policy_id="records-policy",
         version="1.0.0",
@@ -110,12 +139,19 @@ def test_policy_capability_and_tool_contracts_round_trip_with_typed_metadata() -
             )
         ],
     )
-    capability = CapabilityDefinition(
-        capability_id="record-review",
+    skill = SkillDefinition(
+        skill_id="record-review",
         version="1.0.0",
+        name="Record review",
         description="Review records.",
-        supported_operations=["read"],
-        allowed_tool_ids=["records-read"],
+        supported_operations=("read",),
+        required_tool_refs=(
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            ),
+        ),
         owner_id="records-team",
     )
     tool = ToolDefinition(
@@ -131,12 +167,12 @@ def test_policy_capability_and_tool_contracts_round_trip_with_typed_metadata() -
     )
 
     restored_policy = PolicyDefinition.model_validate_json(policy.model_dump_json())
-    restored_capability = CapabilityDefinition.model_validate_json(capability.model_dump_json())
+    restored_skill = SkillDefinition.model_validate_json(skill.model_dump_json())
     descriptor = tool.descriptor
     restored_descriptor = type(descriptor).model_validate_json(descriptor.model_dump_json())
 
     assert restored_policy == policy
-    assert restored_capability == capability
+    assert restored_skill == skill
     assert restored_descriptor == descriptor
     assert descriptor.input_schema["properties"]["value"]["type"] == "string"
     assert descriptor.output_schema["properties"]["accepted"]["type"] == "boolean"

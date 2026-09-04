@@ -7,11 +7,12 @@ from typing import Any
 
 from ..contracts import (
     AgentPlan,
-    CapabilityDefinition,
     CompiledContext,
     ExecutionContext,
     OutcomeProposal,
     PlanStep,
+    PromptDefinition,
+    SkillDefinition,
     ToolDescriptor,
     ToolResult,
     ToolResultStatus,
@@ -65,7 +66,8 @@ class DeterministicProvider:
         request: InterpretationRequest | None = None,
         context: CompiledContext | None = None,
         execution: ExecutionContext | None = None,
-        capabilities: Sequence[CapabilityDefinition] = (),
+        prompt: PromptDefinition | None = None,
+        skills: Sequence[SkillDefinition] = (),
         tools: Sequence[ToolDescriptor] = (),
     ) -> InterpretationResponse:
         """Return a deterministic generic interpretation proposal."""
@@ -74,10 +76,11 @@ class DeterministicProvider:
             request,
             context=context,
             execution=execution,
-            capabilities=capabilities,
+            prompt=prompt,
+            skills=skills,
             tools=tools,
         )
-        del execution, capabilities, tools
+        del execution, prompt, skills, tools
         return InterpretationResponse(
             proposal=InterpretationProposal(
                 intent=resolved.context.input_text,
@@ -92,7 +95,8 @@ class DeterministicProvider:
         request: PlanningRequest | None = None,
         context: CompiledContext | None = None,
         execution: ExecutionContext | None = None,
-        capabilities: Sequence[CapabilityDefinition] = (),
+        prompt: PromptDefinition | None = None,
+        skills: Sequence[SkillDefinition] = (),
         tools: Sequence[ToolDescriptor] = (),
     ) -> PlanningResponse:
         """Choose one configured tool and return a typed planning response."""
@@ -101,7 +105,8 @@ class DeterministicProvider:
             request,
             context=context,
             execution=execution,
-            capabilities=capabilities,
+            prompt=prompt,
+            skills=skills,
             tools=tools,
         )
         selected = next((tool for tool in resolved.tools if tool.tool_id == self.tool_id), None)
@@ -123,7 +128,7 @@ class DeterministicProvider:
                         step_id="step_1",
                         tool_id=selected.tool_id,
                         tool_version=selected.version,
-                        purpose="Execute the configured capability operation.",
+                        purpose="Execute the configured skill operation.",
                         arguments=arguments,
                         idempotency_key=idempotency_key,
                     )
@@ -202,7 +207,8 @@ def _interpretation_request(
     *,
     context: CompiledContext | None,
     execution: ExecutionContext | None,
-    capabilities: Sequence[CapabilityDefinition],
+    prompt: PromptDefinition | None,
+    skills: Sequence[SkillDefinition],
     tools: Sequence[ToolDescriptor],
 ) -> InterpretationRequest:
     if request is not None:
@@ -213,7 +219,8 @@ def _interpretation_request(
         request_id=f"{execution.execution_id}:interpret",
         context=context,
         execution=execution,
-        capabilities=list(capabilities),
+        prompt=prompt.model_copy(deep=True) if prompt is not None else None,
+        skills=[skill.model_copy(deep=True) for skill in skills],
         tools=list(tools),
     )
 
@@ -223,7 +230,8 @@ def _planning_request(
     *,
     context: CompiledContext | None,
     execution: ExecutionContext | None,
-    capabilities: Sequence[CapabilityDefinition],
+    prompt: PromptDefinition | None,
+    skills: Sequence[SkillDefinition],
     tools: Sequence[ToolDescriptor],
 ) -> PlanningRequest:
     if request is not None:
@@ -234,7 +242,8 @@ def _planning_request(
         request_id=f"{execution.execution_id}:plan",
         context=context,
         execution=execution,
-        capabilities=list(capabilities),
+        prompt=prompt.model_copy(deep=True) if prompt is not None else None,
+        skills=[skill.model_copy(deep=True) for skill in skills],
         tools=list(tools),
     )
 

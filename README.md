@@ -64,7 +64,7 @@ evaluation system can inspect the exported run trace.
 
 ## Phase 1-15 implementation
 
-Phase 1 provides declarative agent, capability, policy, tool, identity,
+Phase 1 provides declarative agent, prompt, skill, policy, tool, identity,
 execution, action, approval, outcome, and error contracts. Phase 2 provides
 typed interpretation, planning, and composition requests and responses,
 provider normalization, deterministic and optional OpenAI adapters,
@@ -83,7 +83,7 @@ exact action requests with review context, pause and resume behavior, expiry,
 review outcomes, and approval transition audit events. Phase 7 provides
 principal-bound in-memory and SQLite workflow state, JSON checkpoints,
 optimistic concurrency, retention hooks, and restart hydration for paused
-executions. Phase 8 provides versioned agent and capability registries with
+executions. Phase 8 provides versioned agent, prompt, and skill registries with
 metadata search, lifecycle controls, compatibility checks, dependency graphs,
 read-only queries, deterministic snapshots, and audit events.
 
@@ -102,6 +102,13 @@ bounded retry, cancellation, and dead-letter controls on the same governed
 runtime. Phase 12 provides structured audit and trace sinks, attributable
 metrics and a configurable cost model, trusted execution budgets, configurable
 redaction, and stable correlation across retries and resumptions.
+
+The artifact model migration makes prompts and skills first-class. Agents
+reference one exact prompt, zero or more exact skills, explicit exact tools,
+and exact policies. Skills describe reusable behavior and tool dependencies;
+they never grant execution authority. Factory manifests and run traces retain
+the exact prompt, skill, tool, policy, profile, registry-snapshot, and digest
+provenance needed to audit a build without exposing private provider reasoning.
 
 See [`docs/public-api.md`](docs/public-api.md) for supported imports,
 [`docs/providers.md`](docs/providers.md) for provider integration guidance,

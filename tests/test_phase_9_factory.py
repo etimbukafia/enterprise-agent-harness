@@ -15,8 +15,8 @@ from enterprise_agent_harness import (
     AgentTemplate,
     AgentVersion,
     BoundedMemory,
-    CapabilityDefinition,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     FactoryAuthorizationError,
     FactoryDependencyError,
@@ -29,15 +29,19 @@ from enterprise_agent_harness import (
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
+    PromptDefinition,
+    PromptRegistry,
     ProviderProfile,
     RegistryError,
     RiskLevel,
     RuntimeConfig,
     RuntimeProfile,
+    RuntimeProfileReference,
+    SkillDefinition,
+    SkillRegistry,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 
 
@@ -67,15 +71,22 @@ def read_tool() -> ToolDefinition:
     )
 
 
-def active_capability() -> CapabilityDefinition:
-    return CapabilityDefinition(
-        capability_id="record-review",
+def active_skill() -> SkillDefinition:
+    return SkillDefinition(
+        skill_id="record-review",
         version="1.0.0",
+        name="Record review",
         description="Review records.",
-        supported_operations=["read"],
-        supported_intents=["review_records"],
-        supported_languages=["en"],
-        allowed_tool_ids=["records-read"],
+        supported_operations=("read",),
+        supported_intents=("review_records",),
+        supported_languages=("en",),
+        required_tool_refs=(
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            ),
+        ),
         risk_level=RiskLevel.LOW,
         owner_id="records-team",
         lifecycle=AgentLifecycleStatus.ACTIVE,
@@ -101,10 +112,21 @@ def active_policy() -> PolicyDefinition:
 
 def make_factory() -> tuple[AgentFactory, AgentRegistry, ListTraceSink]:
     tools = ToolRegistry([read_tool()])
-    capabilities = CapabilityRegistry(tools=tools)
-    capabilities.register(active_capability())
+    skills = SkillRegistry(tools=tools)
+    skills.register(active_skill())
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="records-prompt",
+                version="1.0.0",
+                purpose="Review records safely.",
+                instructions="Use the configured record review skill.",
+            )
+        ]
+    )
     registry = AgentRegistry(
-        capabilities=capabilities,
+        prompts=prompts,
+        skills=skills,
         tools=tools,
         policies=[active_policy()],
     )
@@ -134,15 +156,38 @@ def config(agent_id: str = "records-agent") -> AgentConfig:
         goal="Review records and report approved findings.",
         supported_intents=["review_records"],
         supported_languages=["en"],
-        capabilities=[VersionReference(component_id="record-review", version="1.0.0")],
-        allowed_tools=[VersionReference(component_id="records-read", version="1.0.0")],
-        policies=[VersionReference(component_id="records-policy", version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id="record-review",
+                version="1.0.0",
+            )
+        ],
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            )
+        ],
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id="records-policy",
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
             model="test-model",
         ),
-        runtime_profile=VersionReference(component_id="bounded-read", version="1.0.0"),
+        runtime_profile=RuntimeProfileReference(profile_id="bounded-read", version="1.0.0"),
         state_strategy="in-memory",
         memory_strategy="bounded",
         owner_id="platform-team",
@@ -166,15 +211,17 @@ def test_factory_resolves_exact_components_registers_and_runs_agent() -> None:
     assert built.registered is True
     assert built.dry_run is False
     assert built.runtime is not None
-    assert built.manifest.schema_version == "agent-resolved-manifest.v1"
+    assert built.manifest.schema_version == "agent-resolved-manifest.v2"
     assert built.manifest.manifest_digest
     assert built.manifest.runtime_profile is not None
     assert built.manifest.runtime_limits.max_plan_steps == 1
-    assert [tool.tool_id for tool in built.manifest.tools] == ["records-read"]
-    assert [capability.capability_id for capability in built.manifest.capabilities] == [
-        "record-review"
+    assert [reference.component_id for reference in built.manifest.tool_refs] == ["records-read"]
+    assert [reference.component_id for reference in built.manifest.skill_refs] == ["record-review"]
+    assert [reference.component_id for reference in built.manifest.policy_refs] == [
+        "records-policy"
     ]
-    assert [policy.policy_id for policy in built.manifest.policies] == ["records-policy"]
+    assert built.manifest.prompt_id == "records-prompt"
+    assert built.manifest.registry_snapshot_id
     assert registry.resolve("records-agent", "1.0.0").lifecycle == AgentLifecycleStatus.ACTIVE
     assert factory.validate(config()).manifest_digest == built.manifest.manifest_digest
 
@@ -210,7 +257,15 @@ def test_factory_rejects_missing_dependencies_and_invalid_templates() -> None:
     factory, _registry, _traces = make_factory()
 
     missing_tool = config("missing-tool-agent").model_copy(
-        update={"allowed_tools": [VersionReference(component_id="missing-tool", version="1.0.0")]}
+        update={
+            "tool_refs": [
+                ComponentReference(
+                    component_type=ComponentType.TOOL,
+                    component_id="missing-tool",
+                    version="1.0.0",
+                )
+            ]
+        }
     )
     with pytest.raises(FactoryDependencyError, match="tool is unavailable"):
         factory.validate(missing_tool)
@@ -227,6 +282,11 @@ def test_standard_template_helper_preserves_declarative_input() -> None:
         "agent_id": "helper-agent",
         "version": "1.0.0",
         "goal": "Route requests.",
+        "prompt_ref": {
+            "component_type": "prompt",
+            "component_id": "records-prompt",
+            "version": "1.0.0",
+        },
         "provider_profile": {
             "provider_id": "deterministic",
             "version": "1.0.0",

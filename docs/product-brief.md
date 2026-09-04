@@ -1,6 +1,7 @@
 # Product brief
 
-Status: accepted product scope; implementation baseline through Phase 10.
+Status: accepted product scope; implementation baseline through Phase 15,
+including the first-class prompt/skill artifact model.
 
 ## Product
 
@@ -13,6 +14,11 @@ the runtime decide which work is allowed. The runtime can run read tools,
 write tools, and action tools through the same governed execution path.
 
 The harness is a library. It is not an end-user application.
+
+Prompts are versioned behavioral instruction artifacts. Skills are versioned
+reusable behavior metadata with exact required and optional tool references.
+An agent names one exact prompt, exact skills, explicit exact tools, and exact
+policies. Skill references never grant tool authority.
 
 ## Problem
 
@@ -39,7 +45,7 @@ deployment model or one data store.
 
 The target product provides:
 
-- typed and versioned agent, capability, tool, policy, and runtime contracts;
+- typed and versioned agent, prompt, skill, tool, policy, and runtime contracts;
 - provider adapters that return proposal data;
 - bounded plan-and-act execution;
 - validation before every tool handler;
@@ -52,7 +58,7 @@ The target product provides:
 
 The build plan defines when each responsibility becomes executable. The
 current implementation includes owner-bound durable workflow checkpoints,
-versioned agent/capability discovery, declarative factory assembly, and safe
+versioned agent/prompt/skill discovery, declarative factory assembly, and safe
 runtime-only delegation. Scheduling, cost controls, and production
 integrations remain later-phase work.
 
@@ -85,7 +91,7 @@ An integration is successful when:
    private runtime code.
 8. A paused execution can be hydrated from durable state without allowing a
    different principal or a new provider proposal to change its authority.
-9. A consumer can discover compatible, versioned agents and capabilities from
+9. A consumer can discover compatible, versioned agents and skills from
    registry metadata without inspecting implementation code.
 10. A consumer can instantiate an approved agent from configuration and
     registered components without generating arbitrary code.
@@ -111,7 +117,7 @@ The core package does not provide:
 - autonomous production deployment or release management; or
 - a guarantee that a model or tool result is factually correct.
 
-The consuming application or an external system supplies these capabilities
+The consuming application or an external system supplies these integrations
 through explicit interfaces when it needs them.
 
 ## Boundary assumptions

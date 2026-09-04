@@ -13,8 +13,8 @@ from enterprise_agent_harness import (
     AgentRegistry,
     AgentTemplate,
     AgentVersion,
-    CapabilityDefinition,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     FactoryAuthorizationError,
     FactoryTemplateError,
@@ -25,13 +25,16 @@ from enterprise_agent_harness import (
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
+    PromptDefinition,
+    PromptRegistry,
     ProviderProfile,
     RiskLevel,
     RuntimeAuthorizationError,
+    SkillDefinition,
+    SkillRegistry,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 
 
@@ -77,16 +80,23 @@ def tool(
     )
 
 
-def capability(*, tool_id: str, lifecycle: AgentLifecycleStatus) -> CapabilityDefinition:
+def skill(*, tool_id: str, lifecycle: AgentLifecycleStatus) -> SkillDefinition:
     risk = RiskLevel.HIGH if tool_id == "write-record" else RiskLevel.LOW
-    return CapabilityDefinition(
-        capability_id="record-operation",
+    return SkillDefinition(
+        skill_id="record-operation",
         version="1.0.0",
+        name="Record operation",
         description="Operate on records.",
-        supported_operations=["read", "write"],
-        supported_intents=["record_operation"],
-        supported_languages=["en"],
-        allowed_tool_ids=[tool_id],
+        supported_operations=("read", "write"),
+        supported_intents=("record_operation",),
+        supported_languages=("en",),
+        required_tool_refs=(
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id=tool_id,
+                version="1.0.0",
+            ),
+        ),
         risk_level=risk,
         lifecycle=lifecycle,
     )
@@ -113,16 +123,27 @@ def approval_policy() -> PolicyDefinition:
 def make_factory(
     registered_tool: ToolDefinition,
     *,
-    registered_capability: CapabilityDefinition | None = None,
+    registered_skill: SkillDefinition | None = None,
     policies: list[PolicyDefinition] | None = None,
     approval_broker: InMemoryApprovalBroker | None = None,
 ) -> tuple[AgentFactory, AgentRegistry]:
     tools = ToolRegistry([registered_tool])
-    capabilities = CapabilityRegistry(tools=tools)
-    if registered_capability is not None:
-        capabilities.register(registered_capability)
+    skills = SkillRegistry(tools=tools)
+    if registered_skill is not None:
+        skills.register(registered_skill)
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="audit-prompt",
+                version="1.0.0",
+                purpose="Operate on records safely.",
+                instructions="Use exact configured references and obey policy.",
+            )
+        ]
+    )
     registry = AgentRegistry(
-        capabilities=capabilities,
+        prompts=prompts,
+        skills=skills,
         tools=tools,
         policies=policies or [],
     )
@@ -142,7 +163,7 @@ def config(
     *,
     agent_id: str = "record-agent",
     tool_id: str,
-    include_capability: bool = False,
+    include_skill: bool = False,
     include_policy: bool = False,
     template: AgentTemplate | None = None,
     approval_requirements: list[str] | None = None,
@@ -153,14 +174,37 @@ def config(
         goal="Operate on records safely.",
         supported_intents=["record_operation"],
         supported_languages=["en"],
-        capabilities=(
-            [VersionReference(component_id="record-operation", version="1.0.0")]
-            if include_capability
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="audit-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=(
+            [
+                ComponentReference(
+                    component_type=ComponentType.SKILL,
+                    component_id="record-operation",
+                    version="1.0.0",
+                )
+            ]
+            if include_skill
             else []
         ),
-        allowed_tools=[VersionReference(component_id=tool_id, version="1.0.0")],
-        policies=(
-            [VersionReference(component_id="record-approval", version="1.0.0")]
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id=tool_id,
+                version="1.0.0",
+            )
+        ],
+        policy_refs=(
+            [
+                ComponentReference(
+                    component_type=ComponentType.POLICY,
+                    component_id="record-approval",
+                    version="1.0.0",
+                )
+            ]
             if include_policy
             else []
         ),
@@ -183,8 +227,25 @@ def agent_definition(
     return AgentDefinition(
         identity=AgentVersion(agent_id=agent_id, version="1.0.0"),
         goal="Operate on records safely.",
-        capabilities=[VersionReference(component_id="record-operation", version="1.0.0")],
-        allowed_tools=[VersionReference(component_id="read-record", version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="audit-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id="record-operation",
+                version="1.0.0",
+            )
+        ],
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="read-record",
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
@@ -281,16 +342,29 @@ def test_approval_gated_runtime_fails_closed_without_an_approval_service() -> No
 def test_active_agent_rejects_validated_dependency_but_validated_agent_may_use_it() -> None:
     registered_tool = tool(kind=ToolKind.READ)
     tools = ToolRegistry([registered_tool])
-    capabilities = CapabilityRegistry(tools=tools)
-    capabilities.register(
-        capability(
+    skills = SkillRegistry(tools=tools)
+    skills.register(
+        skill(
             tool_id=registered_tool.tool_id,
             lifecycle=AgentLifecycleStatus.VALIDATED,
         )
     )
-    registry = AgentRegistry(capabilities=capabilities, tools=tools)
+    registry = AgentRegistry(
+        prompts=PromptRegistry(
+            [
+                PromptDefinition(
+                    prompt_id="audit-prompt",
+                    version="1.0.0",
+                    purpose="Operate on records safely.",
+                    instructions="Use exact configured references and obey policy.",
+                )
+            ]
+        ),
+        skills=skills,
+        tools=tools,
+    )
 
-    with pytest.raises(IncompatibleRegistrationError, match="capability is not usable"):
+    with pytest.raises(IncompatibleRegistrationError, match="skill is not usable"):
         registry.register(
             agent_definition(
                 agent_id="active-agent",
@@ -308,27 +382,27 @@ def test_active_agent_rejects_validated_dependency_but_validated_agent_may_use_i
     assert validated.lifecycle == AgentLifecycleStatus.VALIDATED
 
 
-def test_built_agent_rechecks_live_capability_dependencies() -> None:
+def test_built_agent_rechecks_live_skill_dependencies() -> None:
     registered_tool = tool(kind=ToolKind.READ)
-    registered_capability = capability(
+    registered_skill = skill(
         tool_id=registered_tool.tool_id,
         lifecycle=AgentLifecycleStatus.ACTIVE,
     )
     factory, registry = make_factory(
         registered_tool,
-        registered_capability=registered_capability,
+        registered_skill=registered_skill,
     )
     built = factory.build(
         config(
-            agent_id="capability-dependent-agent",
+            agent_id="skill-dependent-agent",
             tool_id=registered_tool.tool_id,
-            include_capability=True,
+            include_skill=True,
             risk_level=RiskLevel.LOW,
         )
     )
     assert built.execute(principal(), "Read record-1").status == OutcomeStatus.COMPLETED
 
-    registry.capabilities.suspend("record-operation", "1.0.0")
+    registry.skills.suspend("record-operation", "1.0.0")
 
     with pytest.raises(FactoryAuthorizationError, match="not active"):
         built.execute(principal(), "Read record-2")
@@ -388,27 +462,27 @@ def test_runtime_guard_runs_before_resume_after_dependency_suspension() -> None:
         requires_approval=True,
         calls=calls,
     )
-    registered_capability = capability(
+    registered_skill = skill(
         tool_id=registered_tool.tool_id,
         lifecycle=AgentLifecycleStatus.ACTIVE,
     )
     broker = InMemoryApprovalBroker()
     factory, registry = make_factory(
         registered_tool,
-        registered_capability=registered_capability,
+        registered_skill=registered_skill,
         approval_broker=broker,
     )
     built = factory.build(
         config(
             tool_id=registered_tool.tool_id,
-            include_capability=True,
+            include_skill=True,
             template=AgentTemplate.APPROVAL_GATED_OPERATOR,
         )
     )
     paused = built.execute(principal(), "Publish record-3")
     request = broker.pending_requests[0]
     broker.approve(request.request_id, decided_by="reviewer")
-    registry.capabilities.suspend("record-operation", "1.0.0")
+    registry.skills.suspend("record-operation", "1.0.0")
 
     assert built.runtime is not None
     with pytest.raises(RuntimeAuthorizationError, match="not active"):

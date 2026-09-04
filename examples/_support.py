@@ -1,4 +1,4 @@
-"""Small shared fixtures for the Phase 15 examples.
+"""Small shared fixtures for the examples.
 
 The fixtures use the same typed tools, policies, registries, and factory as an
 application. They are local examples, not production integrations.
@@ -18,8 +18,8 @@ from enterprise_agent_harness import (
     AgentRegistry,
     AgentTemplate,
     AgentVersion,
-    CapabilityDefinition,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     InMemoryApprovalBroker,
     InMemoryStateStore,
@@ -29,12 +29,15 @@ from enterprise_agent_harness import (
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
+    PromptDefinition,
+    PromptRegistry,
     ProviderProfile,
     RiskLevel,
+    SkillDefinition,
+    SkillRegistry,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 
 
@@ -138,22 +141,29 @@ def action_tool(
     )
 
 
-def capability(
+def skill(
     tool_id: str,
-    capability_id: str = "records-review",
+    skill_id: str = "records-review",
     *,
     risk_level: RiskLevel = RiskLevel.LOW,
-) -> CapabilityDefinition:
-    """Create one registry capability for a tool."""
+) -> SkillDefinition:
+    """Create one registry skill for a tool."""
 
-    return CapabilityDefinition(
-        capability_id=capability_id,
+    return SkillDefinition(
+        skill_id=skill_id,
         version="1.0.0",
+        name="Record operation",
         description="Use the example record operation.",
-        supported_operations=["read" if risk_level == RiskLevel.LOW else "act"],
-        supported_intents=["review_records"],
-        supported_languages=["en"],
-        allowed_tool_ids=[tool_id],
+        supported_operations=("read" if risk_level == RiskLevel.LOW else "act",),
+        supported_intents=("review_records",),
+        supported_languages=("en",),
+        required_tool_refs=(
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id=tool_id,
+                version="1.0.0",
+            ),
+        ),
         risk_level=risk_level,
         owner_id="example-team",
         lifecycle=AgentLifecycleStatus.ACTIVE,
@@ -186,19 +196,31 @@ def allow_policy(
 def make_factory(
     tools: Sequence[ToolDefinition],
     *,
-    capabilities: Sequence[CapabilityDefinition] = (),
+    skills: Sequence[SkillDefinition] = (),
     policies: Sequence[PolicyDefinition] = (),
     approval_broker: InMemoryApprovalBroker | None = None,
     provider: Any | None = None,
-) -> tuple[AgentFactory, ToolRegistry, CapabilityRegistry, ListTraceSink, ListAuditSink]:
+) -> tuple[AgentFactory, ToolRegistry, SkillRegistry, ListTraceSink, ListAuditSink]:
     """Build the local registries and factory used by the examples."""
 
     tool_registry = ToolRegistry(tools)
-    capability_registry = CapabilityRegistry(tools=tool_registry)
-    for item in capabilities:
-        capability_registry.register(item)
+    skill_registry = SkillRegistry(tools=tool_registry)
+    for item in skills:
+        skill_registry.register(item)
+    prompt_registry = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="records-prompt",
+                version="1.0.0",
+                purpose="Safely complete the example request.",
+                instructions="Use the configured skills and report only verified results.",
+                owner_id="example-team",
+            )
+        ]
+    )
     agent_registry = AgentRegistry(
-        capabilities=capability_registry,
+        prompts=prompt_registry,
+        skills=skill_registry,
         tools=tool_registry,
         policies=policies,
     )
@@ -215,7 +237,7 @@ def make_factory(
         trace_sink=traces,
         audit_sink=audits,
     )
-    return factory, tool_registry, capability_registry, traces, audits
+    return factory, tool_registry, skill_registry, traces, audits
 
 
 def agent_config(
@@ -224,7 +246,7 @@ def agent_config(
     tool_id: str | None,
     template: AgentTemplate | None = AgentTemplate.READ_ONLY_ANALYST,
     risk_level: RiskLevel = RiskLevel.LOW,
-    capability_ids: Sequence[str] = (),
+    skill_ids: Sequence[str] = (),
     policy_ids: Sequence[str] = (),
     version: str = "1.0.0",
 ) -> AgentConfig:
@@ -235,13 +257,38 @@ def agent_config(
         goal=f"Run the {agent_id} example safely.",
         supported_intents=["review_records"],
         supported_languages=["en"],
-        capabilities=[
-            VersionReference(component_id=item, version="1.0.0") for item in capability_ids
-        ],
-        allowed_tools=(
-            [VersionReference(component_id=tool_id, version="1.0.0")] if tool_id is not None else []
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
         ),
-        policies=[VersionReference(component_id=item, version="1.0.0") for item in policy_ids],
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id=item,
+                version="1.0.0",
+            )
+            for item in skill_ids
+        ],
+        tool_refs=(
+            [
+                ComponentReference(
+                    component_type=ComponentType.TOOL,
+                    component_id=tool_id,
+                    version="1.0.0",
+                )
+            ]
+            if tool_id is not None
+            else []
+        ),
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id=item,
+                version="1.0.0",
+            )
+            for item in policy_ids
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
@@ -262,9 +309,9 @@ __all__ = [
     "action_tool",
     "agent_config",
     "allow_policy",
-    "capability",
     "make_factory",
     "principal",
     "read_tool",
+    "skill",
     "write_tool",
 ]

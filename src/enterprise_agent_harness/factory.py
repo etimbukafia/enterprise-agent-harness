@@ -20,17 +20,18 @@ from .contracts import (
     AgentLifecycleStatus,
     AgentOutcome,
     AgentTemplate,
-    CapabilityDefinition,
+    ComponentReference,
     PolicyDefinition,
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
+    PromptDefinition,
     ProviderProfile,
     ResolvedAgentManifest,
     RiskLevel,
     RuntimeConfig,
     RuntimeProfile,
-    ToolDescriptor,
+    SkillDefinition,
     ToolKind,
 )
 from .errors import RuntimeAuthorizationError
@@ -281,9 +282,11 @@ class BuiltAgent:
                 manifest_id=self.manifest.manifest_id,
                 source=self.manifest.source,
                 agent=self.manifest.agent,
-                capabilities=self.manifest.capabilities,
-                tools=self.manifest.tools,
-                policies=self.manifest.policies,
+                prompt_ref=self.manifest.prompt_ref,
+                skill_refs=self.manifest.skill_refs,
+                tool_refs=self.manifest.tool_refs,
+                policy_refs=self.manifest.policy_refs,
+                registry_snapshot_id=self.manifest.registry_snapshot_id,
                 provider_profile=self.manifest.provider_profile,
                 runtime_profile=self.manifest.runtime_profile,
                 runtime_limits=self.manifest.runtime_limits,
@@ -347,9 +350,11 @@ class _ResolvedComponents:
     provider: ProviderAdapter
     runtime_profile: RuntimeProfile | None
     runtime_limits: RuntimeConfig
-    capabilities: tuple[CapabilityDefinition, ...]
+    prompt: PromptDefinition
+    skills: tuple[SkillDefinition, ...]
     tools: tuple[ToolDefinition, ...]
     policies: tuple[PolicyDefinition, ...]
+    registry_snapshot_id: str
     memory: MemoryStrategy | None
     state_store: StateStore | None
     manifest: ResolvedAgentManifest
@@ -447,7 +452,8 @@ class AgentFactory:
             runtime = AgentRuntime(
                 tools=self.agent_registry.tools,
                 provider=resolved.provider,
-                capabilities=resolved.capabilities,
+                prompt=resolved.prompt,
+                skills=resolved.skills,
                 state_store=resolved.state_store,
                 memory=resolved.memory,
                 permission_broker=self._permission_broker(resolved),
@@ -464,6 +470,11 @@ class AgentFactory:
                 execution_guard=self._runtime_execution_guard,
                 bound_agent_id=resolved.definition.agent_id,
                 bound_agent_version=resolved.definition.version,
+                manifest_id=resolved.manifest.manifest_id,
+                manifest_digest=resolved.manifest.manifest_digest,
+                registry_snapshot_id=resolved.registry_snapshot_id,
+                prompt_ref=resolved.manifest.prompt_ref,
+                skill_refs=resolved.manifest.skill_refs,
             )
         authority = _manifest_authority(
             manifest=resolved.manifest,
@@ -512,20 +523,25 @@ class AgentFactory:
                     "runtime_profile and runtime_limits cannot both be configured"
                 )
             runtime_profile = self.runtime_profiles.resolve(
-                config.runtime_profile.component_id,
+                config.runtime_profile.profile_id,
                 config.runtime_profile.version,
             )
             runtime_limits = runtime_profile.runtime_limits.model_copy(deep=True)
         else:
             runtime_limits = config.runtime_limits or RuntimeConfig()
 
-        capabilities = tuple(
-            self._resolve_capability(
+        prompt = self._resolve_prompt(
+            config.prompt_ref.component_id,
+            config.prompt_ref.version,
+            require_active=activate,
+        )
+        skills = tuple(
+            self._resolve_skill(
                 reference.component_id,
                 reference.version,
                 require_active=activate,
             )
-            for reference in config.capabilities
+            for reference in config.skill_refs
         )
         tools = tuple(
             self._resolve_tool(
@@ -533,7 +549,7 @@ class AgentFactory:
                 reference.version,
                 require_active=activate,
             )
-            for reference in config.allowed_tools
+            for reference in config.tool_refs
         )
         policies = tuple(
             self._resolve_policy(
@@ -541,7 +557,7 @@ class AgentFactory:
                 reference.version,
                 require_active=activate,
             )
-            for reference in config.policies
+            for reference in config.policy_refs
         )
         target_lifecycle = (
             AgentLifecycleStatus.ACTIVE if activate else AgentLifecycleStatus.VALIDATED
@@ -551,9 +567,10 @@ class AgentFactory:
             goal=config.goal,
             supported_intents=list(config.supported_intents),
             supported_languages=list(config.supported_languages),
-            capabilities=[reference.model_copy(deep=True) for reference in config.capabilities],
-            allowed_tools=[reference.model_copy(deep=True) for reference in config.allowed_tools],
-            policies=[reference.model_copy(deep=True) for reference in config.policies],
+            prompt_ref=config.prompt_ref.model_copy(deep=True),
+            skill_refs=[reference.model_copy(deep=True) for reference in config.skill_refs],
+            tool_refs=[reference.model_copy(deep=True) for reference in config.tool_refs],
+            policy_refs=[reference.model_copy(deep=True) for reference in config.policy_refs],
             provider_profile=config.provider_profile.model_copy(deep=True),
             runtime_limits=runtime_limits,
             risk_level=config.risk_level,
@@ -574,13 +591,14 @@ class AgentFactory:
         self._validate_template(config, tools=tools, policies=policies)
         memory = self._resolve_memory(config.memory_strategy)
         state_store = self._resolve_state(config.state_strategy)
-        tool_descriptors = tuple(tool.descriptor for tool in tools)
+        registry_snapshot = self.agent_registry.snapshot(
+            include_inactive=not activate,
+            agent_overrides=(definition,),
+        )
         manifest = self._manifest(
             config=config,
             definition=definition,
-            capabilities=capabilities,
-            tools=tool_descriptors,
-            policies=policies,
+            registry_snapshot_id=registry_snapshot.snapshot_id,
             runtime_profile=runtime_profile,
             runtime_limits=runtime_limits,
         )
@@ -590,34 +608,59 @@ class AgentFactory:
             provider=provider,
             runtime_profile=runtime_profile,
             runtime_limits=runtime_limits,
-            capabilities=capabilities,
+            prompt=prompt,
+            skills=skills,
             tools=tools,
             policies=policies,
+            registry_snapshot_id=registry_snapshot.snapshot_id,
             memory=memory,
             state_store=state_store,
             manifest=manifest,
         )
 
-    def _resolve_capability(
+    def _resolve_prompt(
         self,
-        capability_id: str,
+        prompt_id: str,
         version: str,
         *,
         require_active: bool,
-    ) -> CapabilityDefinition:
+    ) -> PromptDefinition:
         try:
-            if require_active:
-                capability = self.agent_registry.capabilities.resolve(capability_id, version)
-            else:
-                capability = self.agent_registry.capabilities.get(capability_id, version)
-                if capability.lifecycle not in {
-                    AgentLifecycleStatus.VALIDATED,
-                    AgentLifecycleStatus.ACTIVE,
-                }:
-                    raise RegistryError(f"capability is not validated: {capability_id}@{version}")
+            prompt = (
+                self.agent_registry.prompts.resolve(prompt_id, version)
+                if require_active
+                else self.agent_registry.prompts.get(prompt_id, version)
+            )
+            if not require_active and prompt.lifecycle not in {
+                AgentLifecycleStatus.VALIDATED,
+                AgentLifecycleStatus.ACTIVE,
+            }:
+                raise RegistryError(f"prompt is not validated: {prompt_id}@{version}")
         except RegistryError as exc:
             raise FactoryDependencyError(str(exc)) from exc
-        return capability
+        return prompt
+
+    def _resolve_skill(
+        self,
+        skill_id: str,
+        version: str,
+        *,
+        require_active: bool,
+    ) -> SkillDefinition:
+        try:
+            skill = (
+                self.agent_registry.skills.resolve(skill_id, version)
+                if require_active
+                else self.agent_registry.skills.get(skill_id, version)
+            )
+            if not require_active and skill.lifecycle not in {
+                AgentLifecycleStatus.VALIDATED,
+                AgentLifecycleStatus.ACTIVE,
+            }:
+                raise RegistryError(f"skill is not validated: {skill_id}@{version}")
+        except RegistryError as exc:
+            raise FactoryDependencyError(str(exc)) from exc
+        return skill
 
     def _resolve_tool(
         self,
@@ -775,9 +818,7 @@ class AgentFactory:
         *,
         config: AgentConfig,
         definition: AgentDefinition,
-        capabilities: Sequence[CapabilityDefinition],
-        tools: Sequence[ToolDescriptor],
-        policies: Sequence[PolicyDefinition],
+        registry_snapshot_id: str,
         runtime_profile: RuntimeProfile | None,
         runtime_limits: RuntimeConfig,
     ) -> ResolvedAgentManifest:
@@ -786,9 +827,11 @@ class AgentFactory:
             manifest_id=manifest_id,
             source=config,
             agent=definition,
-            capabilities=capabilities,
-            tools=tools,
-            policies=policies,
+            prompt_ref=definition.prompt_ref,
+            skill_refs=definition.skill_refs,
+            tool_refs=definition.tool_refs,
+            policy_refs=definition.policy_refs,
+            registry_snapshot_id=registry_snapshot_id,
             provider_profile=config.provider_profile,
             runtime_profile=runtime_profile,
             runtime_limits=runtime_limits,
@@ -799,9 +842,11 @@ class AgentFactory:
             manifest_digest=digest,
             source=config.model_copy(deep=True),
             agent=definition.model_copy(deep=True),
-            capabilities=tuple(item.model_copy(deep=True) for item in capabilities),
-            tools=tuple(item.model_copy(deep=True) for item in tools),
-            policies=tuple(item.model_copy(deep=True) for item in policies),
+            prompt_ref=definition.prompt_ref.model_copy(deep=True),
+            skill_refs=tuple(item.model_copy(deep=True) for item in definition.skill_refs),
+            tool_refs=tuple(item.model_copy(deep=True) for item in definition.tool_refs),
+            policy_refs=tuple(item.model_copy(deep=True) for item in definition.policy_refs),
+            registry_snapshot_id=registry_snapshot_id,
             provider_profile=config.provider_profile.model_copy(deep=True),
             runtime_profile=(
                 runtime_profile.model_copy(deep=True) if runtime_profile is not None else None
@@ -837,11 +882,10 @@ def _manifest_authority(
         agent_id=definition.agent_id,
         agent_version=definition.version,
         allowed_tool_ids=tuple(
-            dict.fromkeys(reference.component_id for reference in definition.allowed_tools)
+            dict.fromkeys(reference.component_id for reference in definition.tool_refs)
         ),
         allowed_tool_versions=tuple(
-            f"{reference.component_id}@{reference.version}"
-            for reference in definition.allowed_tools
+            f"{reference.component_id}@{reference.version}" for reference in definition.tool_refs
         ),
         tool_permissions=tuple(
             sorted(
@@ -862,9 +906,11 @@ def _calculate_manifest_digest(
     manifest_id: str,
     source: AgentConfig,
     agent: AgentDefinition,
-    capabilities: Sequence[CapabilityDefinition],
-    tools: Sequence[ToolDescriptor],
-    policies: Sequence[PolicyDefinition],
+    prompt_ref: ComponentReference,
+    skill_refs: Sequence[ComponentReference],
+    tool_refs: Sequence[ComponentReference],
+    policy_refs: Sequence[ComponentReference],
+    registry_snapshot_id: str,
     provider_profile: ProviderProfile,
     runtime_profile: RuntimeProfile | None,
     runtime_limits: RuntimeConfig,
@@ -876,9 +922,11 @@ def _calculate_manifest_digest(
         "manifest_id": manifest_id,
         "source": source.model_dump(mode="json"),
         "agent": agent.model_dump(mode="json"),
-        "capabilities": [item.model_dump(mode="json") for item in capabilities],
-        "tools": [item.model_dump(mode="json") for item in tools],
-        "policies": [item.model_dump(mode="json") for item in policies],
+        "prompt_ref": prompt_ref.model_dump(mode="json"),
+        "skill_refs": [item.model_dump(mode="json") for item in skill_refs],
+        "tool_refs": [item.model_dump(mode="json") for item in tool_refs],
+        "policy_refs": [item.model_dump(mode="json") for item in policy_refs],
+        "registry_snapshot_id": registry_snapshot_id,
         "provider_profile": provider_profile.model_dump(mode="json"),
         "runtime_profile": (
             runtime_profile.model_dump(mode="json") if runtime_profile is not None else None

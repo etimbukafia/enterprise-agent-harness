@@ -7,10 +7,11 @@ from dataclasses import dataclass
 
 from ..contracts import (
     AgentPlan,
-    CapabilityDefinition,
     CompiledContext,
     ExecutionContext,
     OutcomeProposal,
+    PromptDefinition,
+    SkillDefinition,
     ToolDescriptor,
 )
 from .base import ProviderAdapter
@@ -37,7 +38,8 @@ def run_conformance_probe(
     *,
     context: CompiledContext,
     execution: ExecutionContext,
-    capabilities: Sequence[CapabilityDefinition] = (),
+    prompt: PromptDefinition | None = None,
+    skills: Sequence[SkillDefinition] = (),
     tools: Sequence[ToolDescriptor] = (),
 ) -> ProviderConformanceResult:
     """Verify all provider operations return the public typed contracts."""
@@ -48,7 +50,8 @@ def run_conformance_probe(
                 request_id="conformance:interpret",
                 context=context,
                 execution=execution,
-                capabilities=list(capabilities),
+                prompt=prompt.model_copy(deep=True) if prompt is not None else None,
+                skills=[skill.model_copy(deep=True) for skill in skills],
                 tools=list(tools),
             )
         )
@@ -59,7 +62,8 @@ def run_conformance_probe(
                 request_id="conformance:plan",
                 context=context,
                 execution=execution,
-                capabilities=list(capabilities),
+                prompt=prompt.model_copy(deep=True) if prompt is not None else None,
+                skills=[skill.model_copy(deep=True) for skill in skills],
                 tools=list(tools),
                 interpretation=interpretation,
             )

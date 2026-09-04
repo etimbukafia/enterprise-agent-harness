@@ -27,7 +27,7 @@ versioned agent definition declares:
 
 - identity and version;
 - goal;
-- capabilities and allowed tools;
+- one exact prompt, reusable skills, and explicit tool references;
 - policies and approval requirements;
 - provider profile;
 - runtime limits;
@@ -36,11 +36,11 @@ versioned agent definition declares:
 - supported intents and languages; and
 - owner, lifecycle, and performance metadata.
 
-`AgentRegistry` and `CapabilityRegistry` resolve exact, compatible versions
-from application-owned records. `AgentFactory` assembles an active runtime
-from those records and emits a resolved manifest that pins every dependency
-version before an execution starts. `AgentComposer` can invoke only registered,
-factory-built runtime versions.
+`AgentRegistry`, `PromptRegistry`, and `SkillRegistry` resolve exact,
+compatible versions from application-owned records. `AgentFactory` assembles
+an active runtime from those records and emits a resolved manifest that pins
+every dependency version before an execution starts. `AgentComposer` can
+invoke only registered, factory-built runtime versions.
 
 ## Core invariants
 
@@ -242,38 +242,39 @@ optional, separately owned source and its selected items are labelled
 untrusted by `ContextCompiler`. Neither retrieved text nor memory can become
 policy, identity, or authority.
 
-## Agent and capability registries
+## Agent, prompt, and skill registries
 
-`CapabilityRegistry` stores exact capability versions and exposes read-only
-copies for lookup, version listing, metadata search, lifecycle changes,
-compatibility checks against active tools, and versioned snapshots.
-`AgentRegistry` stores exact agent versions and checks referenced capabilities,
-tools, policies, dependency lifecycle, risk ceilings, and tool dependencies
-before validation or activation. Both registries support activation,
-suspension, deprecation, and retirement. Exact versions are immutable;
-replacement means registering a new version.
+`PromptRegistry` stores exact behavioral prompt versions. `SkillRegistry`
+stores reusable skill metadata and exact required or optional tool references.
+`AgentRegistry` stores exact agent versions and checks the prompt, skills,
+explicit tools, policies, dependency lifecycle, risk ceilings, and transitive
+tool dependencies before validation or activation. Each registry exposes
+read-only copies, version listing, metadata search, lifecycle changes, and
+audited snapshots. Exact versions are immutable; replacement means registering
+a new version.
 
 An active agent may register or resolve only when every exact dependency is
 active. A validated agent may reference validated or active dependencies. Exact
 active agent resolution repeats the dependency checks, so suspending a
-capability, tool, or other dependency stops previously built agents before
+prompt, skill, tool, or other dependency stops previously built agents before
 their next execution or resume.
 
 Registry queries return copies so callers cannot mutate registry state through
 the read API. Snapshots sort component records and dependency edges for
-deterministic planning and include exact agent-to-capability, agent-to-tool,
-agent-to-policy, capability-to-tool, and tool-to-tool dependency edges.
+deterministic planning and include exact agent-to-prompt, agent-to-skill,
+agent-to-tool, agent-to-policy, skill-to-tool, and tool-to-tool dependency
+edges.
 Mutation and snapshot events use `RegistryAuditEvent` and an application-owned
 `RegistryAuditSink`; tool registration and lifecycle changes use the same
-audit contract. Capability and agent snapshots include the current tool
-registry revision. The combined revision and event history make registry state
-auditable.
+audit contract. Prompt, skill, and agent snapshots include the component
+registry revisions needed to explain their graph. The combined revision and
+event history make registry state auditable.
 
 ## Declarative agent factory
 
-`AgentConfig` is the factory input. It names one exact agent version, provider
-profile, optional runtime profile or direct limits, exact capabilities/tools/
-policies, risk and approval requirements, and optional state and memory
+`AgentConfig` is the factory input. It names one exact agent version, one exact
+prompt, exact skills, explicit exact tools, exact policies, provider profile,
+optional runtime profile or direct limits, risk and approval requirements, and optional state and memory
 strategies. `RuntimeProfileRegistry` and `ProviderRegistry` resolve immutable
 exact records. Standard templates validate common authority shapes: a
 read-only analyst cannot expose side-effecting tools, an action agent must
@@ -434,9 +435,10 @@ PEP 440 forms such as `1.2.0rc1` and `1.2.0.dev1`.
 | Object | Version rule |
 | --- | --- |
 | Python distribution | Use one monotonically increasing PEP 440 version. The current development version is `0.1.0.dev0`. |
-| Agent | Major changes alter the goal, allowed behavior, risk, policy, or required integration. Additive capabilities are minor. Internal fixes are patch. |
+| Agent | Major changes alter the goal, allowed behavior, risk, policy, or required integration. Additive skill references are minor. Internal fixes are patch. |
 | Tool | A change to input or output meaning, side effects, kind, risk, required permission, approval requirement, or idempotency contract is breaking and needs a new major version. Compatible additions are minor. Behavior-preserving fixes are patch. |
-| Capability | Adding a compatible operation is minor. Removing an operation, changing its meaning, or changing its authority boundary is major. Metadata-only fixes are patch. |
+| Prompt | Changing behavioral instructions or purpose is major. Metadata-only fixes are patch. |
+| Skill | Adding compatible metadata or an optional tool is minor. Changing required tools, meaning, risk, or behavior is major. Metadata-only fixes are patch. |
 | Policy | Every behavior change gets a new immutable version. A change that can alter an existing allow, deny, or approval result is major for dependent manifests. |
 | Approval policy | Every behavior change gets a new immutable version. A change that can alter a required-review result is major for dependent manifests. |
 | Provider profile | A change that requires a new adapter contract or changes proposal interpretation is major. Compatible configuration additions are minor. Metadata or defect fixes are patch. |
@@ -586,8 +588,6 @@ The following decisions are accepted for this baseline:
   resume; and
 - `adr/0007-durable-state-and-resume.md` - owner-bound durable checkpoints,
   optimistic concurrency, retention, and migrations; and
-- `adr/0008-versioned-agent-capability-registries.md` - immutable registry
-  records, compatibility checks, lifecycle, snapshots, and audit; and
 - `adr/0009-declarative-agent-factory.md` - declarative exact-component
   assembly, runtime profiles, templates, manifests, registration, and dry run;
   and
@@ -600,6 +600,9 @@ The following decisions are accepted for this baseline:
 - `adr/0012-observability-audit-cost-controls.md` - audit versus trace
   responsibilities, pluggable sinks, metrics and cost model, execution budgets,
   redaction, correlation, and trace bundle export.
+- `adr/0013-agent-skill-prompt-artifact-model.md` - first-class prompt and
+  skill artifacts, typed component references, full registry graph snapshots,
+  manifest provenance, and forward-only migration.
 
 Phase 0B establishes the decisions and skeleton. Phases 1 and 2 implement the
 core contracts, provider-neutral request/response boundary, deterministic fake,
@@ -609,7 +612,7 @@ boundaries. Phase 5 implements the bounded coordinator and run controls. Phase
 6 implements application-owned approval policy, exact-digest pause and resume,
  expiry, and review outcomes. Phase 7 implements owner-bound durable workflow
  state, checkpoint hydration, and retention/version hooks. Phase 8 implements
- agent and capability discovery, lifecycle, compatibility validation, and
+ agent, prompt, and skill discovery, lifecycle, compatibility validation, and
  auditable deterministic snapshots. Phase 9 implements declarative factory
  resolution, reusable runtime profiles, templates, manifests, registration,
  and dry runs. Phase 10 implements runtime-only delegation, composition

@@ -11,7 +11,13 @@ from datetime import datetime
 from threading import RLock
 from typing import Any, Protocol
 
-from ..contracts import ExecutionContext, OutcomeStatus, PolicyDecision, ToolExecutionRecord
+from ..contracts import (
+    ComponentReference,
+    ExecutionContext,
+    OutcomeStatus,
+    PolicyDecision,
+    ToolExecutionRecord,
+)
 from ..evaluation.contracts import RunTrace, TraceEvent
 from ..providers.contracts import ProviderCallMetadata, ProviderCallRecord, ProviderOperation
 from .failures import (
@@ -61,6 +67,11 @@ class TraceRecorder:
         redactor: Redactor | None = None,
         cost_model: CostModel | None = None,
         failure_reporter: ObservabilityFailureReporter | None = None,
+        manifest_id: str | None = None,
+        manifest_digest: str | None = None,
+        registry_snapshot_id: str | None = None,
+        prompt_ref: ComponentReference | None = None,
+        skill_refs: tuple[ComponentReference, ...] = (),
     ) -> None:
         self.execution = execution
         self.sink = sink
@@ -69,6 +80,11 @@ class TraceRecorder:
         self._redactor = redactor or DefaultRedactor()
         self._cost_model = cost_model
         self.failure_reporter = failure_reporter or ListObservabilityFailureReporter()
+        self._manifest_id = manifest_id
+        self._manifest_digest = manifest_digest
+        self._registry_snapshot_id = registry_snapshot_id
+        self._prompt_ref = prompt_ref.model_copy(deep=True) if prompt_ref is not None else None
+        self._skill_refs = tuple(reference.model_copy(deep=True) for reference in skill_refs)
         self._started_at = time.perf_counter()
         self._input_fingerprint = fingerprint(input_text)
         if initial_trace is not None and (
@@ -88,6 +104,11 @@ class TraceRecorder:
             or initial_trace.trigger_id != execution.trigger_id
             or initial_trace.causation_id != execution.causation_id
             or initial_trace.attempt != execution.attempt
+            or initial_trace.manifest_id != self._manifest_id
+            or initial_trace.manifest_digest != self._manifest_digest
+            or initial_trace.registry_snapshot_id != self._registry_snapshot_id
+            or initial_trace.prompt_ref != self._prompt_ref
+            or initial_trace.skill_refs != self._skill_refs
         ):
             raise ValueError("initial trace does not match the execution")
         self._events: list[TraceEvent] = (
@@ -192,6 +213,11 @@ class TraceRecorder:
             tenant_id=self.execution.principal.tenant_id,
             session_id=self.execution.principal.session_id,
             input_fingerprint=self._input_fingerprint,
+            manifest_id=self._manifest_id,
+            manifest_digest=self._manifest_digest,
+            registry_snapshot_id=self._registry_snapshot_id,
+            prompt_ref=self._prompt_ref.model_copy(deep=True) if self._prompt_ref else None,
+            skill_refs=tuple(reference.model_copy(deep=True) for reference in self._skill_refs),
             correlation_id=self.execution.correlation_id,
             parent_execution_id=self.execution.parent_execution_id,
             delegation_id=self.execution.delegation_id,

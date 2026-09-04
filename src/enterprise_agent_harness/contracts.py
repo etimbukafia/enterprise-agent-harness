@@ -48,7 +48,7 @@ class ToolKind(str, Enum):
 
 
 class RiskLevel(str, Enum):
-    """Risk level declared by the application for a tool or capability."""
+    """Risk level declared by the application for a tool or skill."""
 
     LOW = "low"
     MEDIUM = "medium"
@@ -128,7 +128,8 @@ class ContextBlockType(str, Enum):
     POLICY = "policy"
     PRINCIPAL = "principal"
     EXECUTION = "execution"
-    CAPABILITY = "capability"
+    PROMPT = "prompt"
+    SKILL = "skill"
     STATE = "state"
     MEMORY = "memory"
     INPUT = "input"
@@ -379,35 +380,108 @@ def _render_context_blocks(blocks: tuple[ContextBlock, ...]) -> str:
     )
 
 
-class CapabilityDefinition(ContractModel):
-    """Configured capability exposed to a provider and runtime."""
+class ComponentType(str, Enum):
+    """Kind of an exact reusable harness artifact."""
 
-    capability_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+    AGENT = "agent"
+    PROMPT = "prompt"
+    SKILL = "skill"
+    TOOL = "tool"
+    POLICY = "policy"
+
+
+class ComponentReference(ContractModel):
+    """Immutable identity for one exact harness artifact version."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, frozen=True)
+
+    component_type: ComponentType
+    component_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
+
+    @field_validator("version")
+    @classmethod
+    def version_is_pep440_component_version(cls, value: str) -> str:
+        return _validate_component_version(value)
+
+    @property
+    def identity(self) -> str:
+        """Return the stable ``type:id@version`` identity."""
+
+        return f"{self.component_type.value}:{self.component_id}@{self.version}"
+
+
+class RuntimeProfileReference(ContractModel):
+    """Exact reference to a reusable runtime profile."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, frozen=True)
+
+    profile_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+    version: str = Field(min_length=1)
+
+    @field_validator("version")
+    @classmethod
+    def version_is_pep440_component_version(cls, value: str) -> str:
+        return _validate_component_version(value)
+
+
+class SkillDefinition(ContractModel):
+    """Immutable, versioned reusable ability metadata.
+
+    Tool references describe dependencies only. They do not grant permission
+    to execute a tool; an agent must also declare the exact tool reference and
+    the runtime must authorize the resulting proposal.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, frozen=True)
+
+    schema_version: Literal["agent-skill.v1"] = "agent-skill.v1"
+    skill_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+    version: str = Field(min_length=1)
+    name: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    supported_operations: list[str] = Field(min_length=1)
-    supported_intents: list[str] = Field(default_factory=list)
-    supported_languages: list[str] = Field(default_factory=list)
-    allowed_tool_ids: list[str] = Field(default_factory=list)
+    supported_operations: tuple[str, ...] = ()
+    supported_intents: tuple[str, ...] = ()
+    supported_languages: tuple[str, ...] = ()
+    required_tool_refs: tuple[ComponentReference, ...] = ()
+    optional_tool_refs: tuple[ComponentReference, ...] = ()
     risk_level: RiskLevel = RiskLevel.LOW
     owner_id: str = Field(default="application", min_length=1)
     lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.ACTIVE
-    tags: list[str] = Field(default_factory=list)
-    performance_metadata: dict[str, Any] = Field(default_factory=dict)
+    tags: tuple[str, ...] = ()
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("version")
+    @classmethod
+    def version_is_pep440_component_version(cls, value: str) -> str:
+        return _validate_component_version(value)
 
     @model_validator(mode="after")
-    def lists_are_unique(self) -> Self:
+    def values_are_unique_and_typed(self) -> Self:
         for name in (
             "supported_operations",
             "supported_intents",
             "supported_languages",
-            "allowed_tool_ids",
             "tags",
         ):
             values = getattr(self, name)
             if len(values) != len(set(values)):
                 raise ValueError(f"{name} must not contain duplicates")
+        required = self.required_tool_refs
+        optional = self.optional_tool_refs
+        references = [*required, *optional]
+        if len({(item.component_id, item.version) for item in references}) != len(references):
+            raise ValueError("required_tool_refs and optional_tool_refs must not overlap")
+        for reference in references:
+            if reference.component_type != ComponentType.TOOL:
+                raise ValueError("skill tool references must have component_type=tool")
         return self
+
+    @property
+    def tool_refs(self) -> tuple[ComponentReference, ...]:
+        """Return required and optional tool dependencies in declaration order."""
+
+        return (*self.required_tool_refs, *self.optional_tool_refs)
 
 
 class ToolDescriptor(ContractModel):
@@ -431,8 +505,20 @@ class ToolDescriptor(ContractModel):
     retryable: bool = False
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
-    dependencies: list[str] = Field(default_factory=list)
+    dependencies: list[ComponentReference] = Field(default_factory=list)
     allowed_environments: list[str] = Field(default_factory=list)
+
+    @field_validator("dependencies")
+    @classmethod
+    def dependencies_are_exact_tools(
+        cls, value: list[ComponentReference]
+    ) -> list[ComponentReference]:
+        if any(reference.component_type != ComponentType.TOOL for reference in value):
+            raise ValueError("tool dependencies must have component_type=tool")
+        identities = [reference.identity for reference in value]
+        if len(identities) != len(set(identities)):
+            raise ValueError("tool dependencies must be unique")
+        return value
 
 
 class EvidenceRef(ContractModel):
@@ -724,16 +810,37 @@ class ApprovalPolicyDecision(ContractModel):
         return self
 
 
-class VersionReference(ContractModel):
-    """Exact reference to a versioned registry component."""
+class PromptDefinition(ContractModel):
+    """Immutable, provider-neutral behavioral instruction artifact."""
 
-    component_id: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, frozen=True)
+
+    schema_version: Literal["agent-prompt.v1"] = "agent-prompt.v1"
+    prompt_id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
     version: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+    instructions: str = Field(min_length=1)
+    owner_id: str = Field(default="application", min_length=1)
+    lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.ACTIVE
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("version")
     @classmethod
     def version_is_pep440_component_version(cls, value: str) -> str:
         return _validate_component_version(value)
+
+    @field_validator("purpose", "instructions")
+    @classmethod
+    def text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("prompt text must not be blank")
+        return value
+
+    @property
+    def identity(self) -> str:
+        """Return the stable ``prompt_id@version`` identity."""
+
+        return f"{self.prompt_id}@{self.version}"
 
 
 class PolicyRule(ContractModel):
@@ -1006,14 +1113,15 @@ class ProviderProfile(ContractModel):
 class AgentDefinition(ContractModel):
     """Declarative, versioned description of an enterprise agent."""
 
-    schema_version: Literal["agent-definition.v1"] = "agent-definition.v1"
+    schema_version: Literal["agent-definition.v2"] = "agent-definition.v2"
     identity: AgentVersion
     goal: str = Field(min_length=1)
     supported_intents: list[str] = Field(default_factory=list)
     supported_languages: list[str] = Field(default_factory=list)
-    capabilities: list[VersionReference] = Field(default_factory=list)
-    allowed_tools: list[VersionReference] = Field(default_factory=list)
-    policies: list[VersionReference] = Field(default_factory=list)
+    prompt_ref: ComponentReference
+    skill_refs: list[ComponentReference] = Field(default_factory=list)
+    tool_refs: list[ComponentReference] = Field(default_factory=list)
+    policy_refs: list[ComponentReference] = Field(default_factory=list)
     provider_profile: ProviderProfile
     runtime_limits: RuntimeConfig = Field(default_factory=RuntimeConfig)
     risk_level: RiskLevel = RiskLevel.LOW
@@ -1049,9 +1157,9 @@ class AgentDefinition(ContractModel):
         for name in (
             "supported_intents",
             "supported_languages",
-            "capabilities",
-            "allowed_tools",
-            "policies",
+            "skill_refs",
+            "tool_refs",
+            "policy_refs",
             "approval_requirements",
         ):
             values = getattr(self, name)
@@ -1064,6 +1172,16 @@ class AgentDefinition(ContractModel):
                 keys = [(item.component_id, item.version) for item in values]
             if len(keys) != len(set(keys)):
                 raise ValueError(f"{name} must not contain duplicates")
+        if self.prompt_ref.component_type != ComponentType.PROMPT:
+            raise ValueError("prompt_ref must have component_type=prompt")
+        expected_types = {
+            "skill_refs": ComponentType.SKILL,
+            "tool_refs": ComponentType.TOOL,
+            "policy_refs": ComponentType.POLICY,
+        }
+        for name, expected in expected_types.items():
+            if any(reference.component_type != expected for reference in getattr(self, name)):
+                raise ValueError(f"{name} have an invalid component_type")
         return self
 
     @property
@@ -1082,16 +1200,17 @@ class AgentDefinition(ContractModel):
 class AgentConfig(ContractModel):
     """Declarative input for the agent factory."""
 
-    schema_version: Literal["agent-config.v1"] = "agent-config.v1"
+    schema_version: Literal["agent-config.v2"] = "agent-config.v2"
     identity: AgentVersion
     goal: str = Field(min_length=1)
     supported_intents: list[str] = Field(default_factory=list)
     supported_languages: list[str] = Field(default_factory=list)
-    capabilities: list[VersionReference] = Field(default_factory=list)
-    allowed_tools: list[VersionReference] = Field(default_factory=list)
-    policies: list[VersionReference] = Field(default_factory=list)
+    prompt_ref: ComponentReference
+    skill_refs: list[ComponentReference] = Field(default_factory=list)
+    tool_refs: list[ComponentReference] = Field(default_factory=list)
+    policy_refs: list[ComponentReference] = Field(default_factory=list)
     provider_profile: ProviderProfile
-    runtime_profile: VersionReference | None = None
+    runtime_profile: RuntimeProfileReference | None = None
     runtime_limits: RuntimeConfig | None = None
     risk_level: RiskLevel = RiskLevel.LOW
     approval_requirements: list[str] = Field(default_factory=list)
@@ -1126,9 +1245,9 @@ class AgentConfig(ContractModel):
         for name in (
             "supported_intents",
             "supported_languages",
-            "capabilities",
-            "allowed_tools",
-            "policies",
+            "skill_refs",
+            "tool_refs",
+            "policy_refs",
             "approval_requirements",
         ):
             values = getattr(self, name)
@@ -1138,6 +1257,16 @@ class AgentConfig(ContractModel):
                 keys = [(item.component_id, item.version) for item in values]
             if len(keys) != len(set(keys)):
                 raise ValueError(f"{name} must not contain duplicates")
+        if self.prompt_ref.component_type != ComponentType.PROMPT:
+            raise ValueError("prompt_ref must have component_type=prompt")
+        expected_types = {
+            "skill_refs": ComponentType.SKILL,
+            "tool_refs": ComponentType.TOOL,
+            "policy_refs": ComponentType.POLICY,
+        }
+        for name, expected in expected_types.items():
+            if any(reference.component_type != expected for reference in getattr(self, name)):
+                raise ValueError(f"{name} have an invalid component_type")
         return self
 
 
@@ -1161,7 +1290,7 @@ class RuntimeProfile(ContractModel):
 class RegistryDependency(ContractModel):
     """One exact dependency edge in a registry snapshot."""
 
-    schema_version: Literal["agent-registry-dependency.v1"] = "agent-registry-dependency.v1"
+    schema_version: Literal["agent-registry-dependency.v2"] = "agent-registry-dependency.v2"
     source_kind: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
     source_version: str = Field(min_length=1)
@@ -1170,17 +1299,28 @@ class RegistryDependency(ContractModel):
     target_version: str = Field(min_length=1)
     relation: str = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def kinds_are_known(self) -> Self:
+        known = {item.value for item in ComponentType}
+        if self.source_kind not in known or self.target_kind not in known:
+            raise ValueError("registry dependency kinds must identify known components")
+        return self
+
 
 class RegistrySnapshot(ContractModel):
     """Immutable view of exact registry records for deterministic planning."""
 
-    schema_version: Literal["agent-registry-snapshot.v1"] = "agent-registry-snapshot.v1"
+    schema_version: Literal["agent-registry-snapshot.v2"] = "agent-registry-snapshot.v2"
     snapshot_id: str = Field(min_length=1)
     revision: int = Field(ge=0)
+    agent_registry_revision: int = Field(default=0, ge=0)
+    prompt_registry_revision: int = Field(default=0, ge=0)
+    skill_registry_revision: int = Field(default=0, ge=0)
     tool_registry_revision: int = Field(default=0, ge=0)
     generated_at: datetime = Field(default_factory=utc_now)
     agents: list[AgentDefinition] = Field(default_factory=list)
-    capabilities: list[CapabilityDefinition] = Field(default_factory=list)
+    prompts: list[PromptDefinition] = Field(default_factory=list)
+    skills: list[SkillDefinition] = Field(default_factory=list)
     tools: list[ToolDescriptor] = Field(default_factory=list)
     policies: list[PolicyDefinition] = Field(default_factory=list)
     dependencies: list[RegistryDependency] = Field(default_factory=list)
@@ -1197,17 +1337,19 @@ class ResolvedAgentManifest(ContractModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["agent-resolved-manifest.v1"] = "agent-resolved-manifest.v1"
+    schema_version: Literal["agent-resolved-manifest.v2"] = "agent-resolved-manifest.v2"
     manifest_id: str = Field(min_length=1)
     manifest_digest: str = Field(min_length=1)
     source: AgentConfig
     agent: AgentDefinition
-    capabilities: tuple[CapabilityDefinition, ...] = ()
-    tools: tuple[ToolDescriptor, ...] = ()
-    policies: tuple[PolicyDefinition, ...] = ()
+    prompt_ref: ComponentReference
+    skill_refs: tuple[ComponentReference, ...] = ()
+    tool_refs: tuple[ComponentReference, ...] = ()
+    policy_refs: tuple[ComponentReference, ...] = ()
     provider_profile: ProviderProfile
     runtime_profile: RuntimeProfile | None = None
     runtime_limits: RuntimeConfig
+    registry_snapshot_id: str = Field(min_length=1)
     state_strategy: str | None = None
     memory_strategy: str | None = None
     template: AgentTemplate | None = None
@@ -1217,7 +1359,37 @@ class ResolvedAgentManifest(ContractModel):
     def timestamp_is_aware(self) -> Self:
         if self.resolved_at.tzinfo is None or self.resolved_at.utcoffset() is None:
             raise ValueError("resolved_at must include timezone information")
+        if self.prompt_ref.component_type != ComponentType.PROMPT:
+            raise ValueError("manifest prompt_ref must have component_type=prompt")
+        expected_types = {
+            "skill_refs": ComponentType.SKILL,
+            "tool_refs": ComponentType.TOOL,
+            "policy_refs": ComponentType.POLICY,
+        }
+        for name, expected in expected_types.items():
+            if any(reference.component_type != expected for reference in getattr(self, name)):
+                raise ValueError(f"manifest {name} have an invalid component_type")
         return self
+
+    @property
+    def prompt_id(self) -> str:
+        """Return the exact prompt identity in the manifest."""
+
+        return self.prompt_ref.component_id
+
+    @property
+    def prompt_version(self) -> str:
+        """Return the exact prompt version in the manifest."""
+
+        return self.prompt_ref.version
+
+    @property
+    def skill_versions(self) -> tuple[str, ...]:
+        """Return exact skill identities in declaration order."""
+
+        return tuple(
+            f"{reference.component_id}@{reference.version}" for reference in self.skill_refs
+        )
 
 
 class DelegationRequest(ContractModel):

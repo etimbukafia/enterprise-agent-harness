@@ -17,16 +17,16 @@ from enterprise_agent_harness import (
     OutcomeStatus,
 )
 
-from ._support import agent_config, allow_policy, capability, make_factory, principal, read_tool
+from ._support import agent_config, allow_policy, make_factory, principal, read_tool, skill
 
 
 def main() -> None:
     """Select one specialist and delegate under the parent authority."""
 
     tool = read_tool()
-    factory, _tools, _capabilities, _traces, _audits = make_factory(
+    factory, _tools, _skills, _traces, _audits = make_factory(
         [tool],
-        capabilities=[capability(tool.tool_id)],
+        skills=[skill(tool.tool_id)],
         policies=[allow_policy(tool.tool_id)],
     )
     factory.build(
@@ -41,7 +41,7 @@ def main() -> None:
             agent_config(
                 specialist_id,
                 tool_id=tool.tool_id,
-                capability_ids=("records-review",),
+                skill_ids=("records-review",),
                 policy_ids=("records-policy",),
             )
         )

@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from enterprise_agent_harness import (
     AgentLifecycleStatus,
+    ComponentReference,
+    ComponentType,
     ExecutionContext,
     PrincipalContext,
     ToolDefinition,
@@ -105,7 +107,13 @@ def test_tool_descriptor_exposes_risk_timeout_retry_dependency_owner_and_tags() 
         retryable=True,
         max_attempts=3,
         retry_backoff_seconds=0.1,
-        dependencies=("records-api@1.0.0",),
+        dependencies=(
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-api",
+                version="1.0.0",
+            ),
+        ),
         allowed_environments=("development", "staging"),
     )
 
@@ -115,7 +123,13 @@ def test_tool_descriptor_exposes_risk_timeout_retry_dependency_owner_and_tags() 
     assert descriptor.timeout_seconds == 2.5
     assert descriptor.retryable is True
     assert descriptor.max_attempts == 3
-    assert descriptor.dependencies == ["records-api@1.0.0"]
+    assert descriptor.dependencies == [
+        ComponentReference(
+            component_type=ComponentType.TOOL,
+            component_id="records-api",
+            version="1.0.0",
+        )
+    ]
     assert descriptor.allowed_environments == ["development", "staging"]
     assert descriptor.owner_id == "records-team"
     assert descriptor.tags == ["records", "write"]

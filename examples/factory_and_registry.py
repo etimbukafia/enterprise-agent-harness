@@ -7,35 +7,26 @@ Run from the repository root with:
 
 from __future__ import annotations
 
-from enterprise_agent_harness import AgentFactory, AgentTemplate, AgentVersion, ProviderProfile
+from enterprise_agent_harness import AgentTemplate
 
-from ._support import allow_policy, capability, make_factory, read_tool
+from ._support import agent_config, allow_policy, make_factory, read_tool, skill
 
 
 def main() -> None:
     """Query existing functionality, then build one exact agent version."""
 
     tool = read_tool()
-    factory, tools, capabilities, _traces, _audits = make_factory(
+    factory, tools, skills, _traces, _audits = make_factory(
         [tool],
-        capabilities=[capability(tool.tool_id)],
+        skills=[skill(tool.tool_id)],
         policies=[allow_policy(tool.tool_id)],
     )
-    config = AgentFactory.template_config(
-        AgentTemplate.READ_ONLY_ANALYST,
-        identity=AgentVersion(agent_id="factory-analyst", version="1.0.0"),
-        goal="Review records.",
-        supported_intents=["review_records"],
-        supported_languages=["en"],
-        capabilities=[{"component_id": "records-review", "version": "1.0.0"}],
-        allowed_tools=[{"component_id": tool.tool_id, "version": "1.0.0"}],
-        policies=[{"component_id": "records-policy", "version": "1.0.0"}],
-        provider_profile=ProviderProfile(
-            provider_id="deterministic",
-            version="1.0.0",
-            model="example-model",
-        ),
-        owner_id="example-team",
+    config = agent_config(
+        "factory-analyst",
+        tool_id=tool.tool_id,
+        template=AgentTemplate.READ_ONLY_ANALYST,
+        skill_ids=("records-review",),
+        policy_ids=("records-policy",),
     )
 
     print(
@@ -43,8 +34,8 @@ def main() -> None:
         [item.agent_id for item in factory.agent_registry.search(intent="review_records")],
     )
     print(
-        "existing capabilities:",
-        [item.capability_id for item in capabilities.search(tool_id=tool.tool_id)],
+        "existing skills:",
+        [item.skill_id for item in skills.search(tool_id=tool.tool_id)],
     )
     print("existing tool versions:", tools.versions(tool.tool_id))
 

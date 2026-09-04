@@ -68,7 +68,7 @@ def main() -> None:
         ),
     )
     provider = FixedWriteProvider(tool_id=tool.tool_id)
-    factory, _tools, _capabilities, _traces, _audits = make_factory(
+    factory, _tools, _skills, _traces, _audits = make_factory(
         [tool],
         policies=[allow_policy(tool.tool_id)],
         provider=provider,

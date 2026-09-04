@@ -55,7 +55,7 @@ This plan covers these eight issues:
 - [x] Add registry audit events for tool registration and lifecycle changes.
 - [x] Put shared registry audit contracts in a neutral module. This prevents a
   circular import between tool and component registries.
-- [x] Include the tool registry revision in capability and agent snapshots.
+- [x] Include the tool registry revision in skill and agent snapshots.
 
 ### Acceptance Criteria
 
@@ -63,7 +63,7 @@ This plan covers these eight issues:
 - A deprecated or retired tool cannot become active.
 - Each visible tool registry change increments the registry revision.
 - Each tool registration and lifecycle change creates an audit event.
-- A capability or agent snapshot revision changes when its visible tools
+- A skill or agent snapshot revision changes when its visible tools
   change.
 
 ## Workstream 2: Resolved Manifest Integrity
@@ -128,7 +128,7 @@ This plan covers these eight issues:
 ### Acceptance Criteria
 
 - An active agent cannot register against a merely validated dependency.
-- Suspending a capability stops each dependent agent before its next execution
+- Suspending a skill stops each dependent agent before its next execution
   or resume operation.
 - Suspending an agent stops execution through both `BuiltAgent` and its runtime.
 - A caller cannot use a factory-created runtime for a different agent identity.
@@ -197,14 +197,14 @@ protect a related invariant.
 - [x] Tool registry rejects replacement of an exact version.
 - [x] Tool registry rejects invalid lifecycle transitions.
 - [x] Tool changes update revisions and audit events.
-- [x] Agent and capability snapshots include tool revisions.
+- [x] Agent and skill snapshots include tool revisions.
 - [x] Nested manifest modification cannot change execution authority.
 - [x] Manifest digest mismatch stops execution.
 - [x] Approval-gated factory rejects an unprotected write tool.
 - [x] Approval-gated action pauses before the handler and resumes after approval.
 - [x] Approval-gated runtime fails closed without an approval service.
 - [x] Active agent registration rejects a validated-only dependency.
-- [x] Capability suspension stops a previously built agent.
+- [x] Skill suspension stops a previously built agent.
 - [x] Raw runtime execution stops after agent suspension.
 - [x] A factory runtime rejects a different agent identity and suspended tools.
 - [x] Approval decisions require and match a request ID.
@@ -218,7 +218,7 @@ protect a related invariant.
 
 1. Add shared registry audit contracts. [x]
 2. Correct tool registration, lifecycle, revision, and audit behavior. [x]
-3. Add tool revisions to capability and agent snapshots. [x]
+3. Add tool revisions to skill and agent snapshots. [x]
 4. Correct agent registration and dynamic dependency checks. [x]
 5. Add the runtime lifecycle guard and exact agent binding. [x]
 6. Protect build-time authority and add manifest integrity checks. [x]
@@ -289,11 +289,11 @@ Record these items when implementation is complete:
   approval service.
 - Lifecycle enforcement: active-agent registration and exact active resolution
   require active dependencies; validated agents accept validated or active
-  dependencies. Factory runtimes revalidate the agent, capabilities, tools,
+  dependencies. Factory runtimes revalidate the agent, prompts, skills, tools,
   and policies before new execution and resume.
 - Runtime authority: factory-created runtimes are bound to their exact agent
   identity. Direct use through `BuiltAgent.runtime` cannot substitute another
-  agent or bypass a suspended agent, capability, or tool.
+  agent or bypass a suspended agent, skill, or tool.
 - Full test suite: 92 passed.
 - Ruff check: passed; Ruff format check: passed.
 - Strict mypy for `src`: passed.

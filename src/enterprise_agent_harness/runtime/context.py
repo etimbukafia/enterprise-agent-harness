@@ -6,7 +6,6 @@ import json
 from collections.abc import Iterable
 
 from ..contracts import (
-    CapabilityDefinition,
     CompiledContext,
     ContextBlock,
     ContextBlockType,
@@ -15,7 +14,9 @@ from ..contracts import (
     ExecutionState,
     MemoryItem,
     PrincipalContext,
+    PromptDefinition,
     RuntimeConfig,
+    SkillDefinition,
     ToolResult,
 )
 
@@ -39,7 +40,8 @@ class ContextCompiler:
         execution: ExecutionContext,
         input_text: str,
         state: ExecutionState | None = None,
-        capabilities: Iterable[CapabilityDefinition] = (),
+        prompt: PromptDefinition | None = None,
+        skills: Iterable[SkillDefinition] = (),
         memory: Iterable[MemoryItem] = (),
         tool_results: Iterable[ToolResult] = (),
     ) -> CompiledContext:
@@ -84,18 +86,33 @@ class ContextCompiler:
                 priority=90,
             ),
         ]
-        capability_values = list(capabilities)
-        if capability_values:
+        if prompt is not None:
             trusted_blocks.append(
                 self._block(
-                    block_id="capabilities",
-                    block_type=ContextBlockType.CAPABILITY,
+                    block_id="prompt",
+                    block_type=ContextBlockType.PROMPT,
                     trust=ContextTrust.TRUSTED,
-                    source="configured_capabilities",
+                    source="configured_prompt",
+                    content=(
+                        f"prompt_id={prompt.prompt_id}@{prompt.version}; "
+                        f"purpose={prompt.purpose}; instructions={prompt.instructions}"
+                    ),
+                    priority=88,
+                )
+            )
+        skill_values = list(skills)
+        if skill_values:
+            trusted_blocks.append(
+                self._block(
+                    block_id="skills",
+                    block_type=ContextBlockType.SKILL,
+                    trust=ContextTrust.TRUSTED,
+                    source="configured_skills",
                     content="; ".join(
-                        f"{item.capability_id}@{item.version}: {item.description}; "
-                        f"operations={','.join(item.supported_operations)}"
-                        for item in capability_values
+                        f"{item.skill_id}@{item.version} ({item.name}): {item.description}; "
+                        f"required_tools={','.join(ref.identity for ref in item.required_tool_refs) or 'none'}; "
+                        f"optional_tools={','.join(ref.identity for ref in item.optional_tool_refs) or 'none'}"
+                        for item in skill_values
                     ),
                     priority=85,
                 )
@@ -181,6 +198,7 @@ class ContextCompiler:
                 ContextBlockType.POLICY,
                 ContextBlockType.PRINCIPAL,
                 ContextBlockType.INPUT,
+                ContextBlockType.PROMPT,
             }
         ]
         optional = [block for block in blocks if block not in required]

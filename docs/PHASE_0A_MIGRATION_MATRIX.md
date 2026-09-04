@@ -8,7 +8,7 @@ Allowed actions are `reuse mostly unchanged`, `generalize`, `redesign`, and
 | --- | --- | --- | --- | --- |
 | `src/assistant_harness/__init__.py` | `src/enterprise_agent_harness/__init__.py` | redesign | Explicit public exports. | Export agent contracts only. |
 | `src/assistant_harness/audit.py` | `observability/audit.py` | generalize | Sink protocol, in-memory sink, event logger, metadata filtering. | Bind events to agent and execution IDs. |
-| `src/assistant_harness/context.py` | `runtime/context.py` | generalize | Trust labels, block priorities, required-block budget handling. | Compile policy, principal, execution, state, capability, memory, input, and tool output. |
+| `src/assistant_harness/context.py` | `runtime/context.py` | generalize | Trust labels, block priorities, required-block budget handling. | Compile policy, principal, execution, state, prompt, skill, memory, input, and tool output. |
 | `src/assistant_harness/contracts.py` | `contracts.py` | redesign | Strict Pydantic contracts and aware timestamps. | Replace assistant contracts with generic plans, results, outcomes, and state. |
 | `src/assistant_harness/evals.py` | external evaluation system | do not carry forward | No runtime ownership of evaluation. | Do not copy case scoring, metrics, hard gates, or baseline comparison. |
 | `src/assistant_harness/evaluation_contracts.py` | `evaluation/contracts.py` | generalize | Versioned machine-readable run data. | Keep only `RunTrace`, `TraceEvent`, and `ReplayRequest`. |
@@ -19,7 +19,7 @@ Allowed actions are `reuse mostly unchanged`, `generalize`, `redesign`, and
 | `src/assistant_harness/providers.py` | `providers/base.py`, `providers/deterministic.py` | generalize | Replaceable provider boundary and deterministic fake. | Provider sees descriptors, not handlers or authority controls. |
 | `src/assistant_harness/recovery.py` | `runtime/execution.py` | redesign | Explicit recovery mapping. | Map generic outcome states to request, refusal, escalation, retry, or abort. |
 | `src/assistant_harness/rules.py` | `governance/safety.py` | generalize | Direct and indirect injection patterns and deterministic thresholds. | Apply rules to generic execution results and risk levels. |
-| `src/assistant_harness/skills.py` | `capabilities/__init__.py`, `contracts.py` | generalize | Configured capability metadata. | Use capability contracts; full discovery registry remains Phase 8. |
+| `src/assistant_harness/skills.py` | `skills/__init__.py`, `contracts.py`, `registries.py` | redesign | Reusable configured behavior metadata. | Use first-class versioned skill contracts with exact required/optional tool references and a dedicated registry. |
 | `src/assistant_harness/state.py` | `state/store.py` | redesign | Copy isolation, owner checks, in-memory store. | Add workflow state versioning and optimistic concurrency. |
 | `src/assistant_harness/tools.py` | `tools/definitions.py`, `tools/registry.py` | generalize | Explicit registration, argument validation, handler boundary. | Add typed output, stable version, risk, write/action, idempotency, and approval metadata. |
 | `src/assistant_harness/verification.py` | `verification/outcomes.py` | generalize | Provider references must belong to tool returns. | Verify generic evidence IDs instead of citation sections. |

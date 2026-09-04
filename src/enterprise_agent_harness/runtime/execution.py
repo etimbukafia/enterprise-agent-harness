@@ -13,7 +13,6 @@ from typing import Any, cast
 from uuid import uuid4
 
 from ..background.events import EventEnvelope, EventTrigger
-from ..capabilities import CapabilityDefinition
 from ..contracts import (
     ActionProposal,
     AgentOutcome,
@@ -23,6 +22,7 @@ from ..contracts import (
     ApprovalPolicyDecision,
     ApprovalRequest,
     CompiledContext,
+    ComponentReference,
     ExecutionCheckpoint,
     ExecutionContext,
     ExecutionState,
@@ -33,11 +33,13 @@ from ..contracts import (
     PlanStep,
     PolicyDecision,
     PrincipalContext,
+    PromptDefinition,
     RecoveryAction,
     ResourceContext,
     RiskLevel,
     RuntimeConfig,
     SafetyFlag,
+    SkillDefinition,
     ToolCall,
     ToolCallRecord,
     ToolDescriptor,
@@ -188,7 +190,8 @@ class AgentRuntime:
         *,
         tools: ToolRegistry,
         provider: ProviderAdapter,
-        capabilities: Sequence[CapabilityDefinition] = (),
+        prompt: PromptDefinition | None = None,
+        skills: Sequence[SkillDefinition] = (),
         state_store: StateStore | None = None,
         memory: MemoryStrategy | None = None,
         permission_broker: PermissionBroker | None = None,
@@ -207,15 +210,36 @@ class AgentRuntime:
         cost_model: CostModel | None = None,
         redactor: Redactor | None = None,
         failure_reporter: ObservabilityFailureReporter | None = None,
+        manifest_id: str | None = None,
+        manifest_digest: str | None = None,
+        registry_snapshot_id: str | None = None,
+        prompt_ref: ComponentReference | None = None,
+        skill_refs: Sequence[ComponentReference] = (),
     ) -> None:
         if (bound_agent_id is None) != (bound_agent_version is None):
             raise ValueError("bound_agent_id and bound_agent_version must be provided together")
         self.tools = tools
         self.provider = provider
-        self.capabilities = tuple(capabilities)
-        self._capability_tool_ids = frozenset(
-            tool_id for capability in self.capabilities for tool_id in capability.allowed_tool_ids
-        )
+        self.prompt = prompt.model_copy(deep=True) if prompt is not None else None
+        self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        self.manifest_id = manifest_id
+        self.manifest_digest = manifest_digest
+        self.registry_snapshot_id = registry_snapshot_id
+        self.prompt_ref = prompt_ref.model_copy(deep=True) if prompt_ref is not None else None
+        self.skill_refs = tuple(reference.model_copy(deep=True) for reference in skill_refs)
+        if (
+            self.prompt is not None
+            and self.prompt_ref is not None
+            and (
+                self.prompt.prompt_id != self.prompt_ref.component_id
+                or self.prompt.version != self.prompt_ref.version
+            )
+        ):
+            raise ValueError("prompt does not match prompt_ref")
+        if self.skill_refs and tuple(
+            (skill.skill_id, skill.version) for skill in self.skills
+        ) != tuple((reference.component_id, reference.version) for reference in self.skill_refs):
+            raise ValueError("skills do not match skill_refs")
         self.state_store = state_store or InMemoryStateStore()
         self.memory = memory
         self.permission_broker = permission_broker or DefaultPermissionBroker()
@@ -666,6 +690,11 @@ class AgentRuntime:
             redactor=self.redactor,
             cost_model=self.cost_model,
             failure_reporter=self.failure_reporter,
+            manifest_id=self.manifest_id,
+            manifest_digest=self.manifest_digest,
+            registry_snapshot_id=self.registry_snapshot_id,
+            prompt_ref=self.prompt_ref,
+            skill_refs=self.skill_refs,
         )
         tool_calls: list[ToolCallRecord] = [
             call.model_copy(deep=True) for call in _initial_tool_calls
@@ -682,6 +711,16 @@ class AgentRuntime:
                 tool_calls=tool_calls,
             )
         execution_metadata = {"input_length": str(len(text))}
+        if self.manifest_id is not None:
+            execution_metadata["manifest_id"] = self.manifest_id
+        if self.registry_snapshot_id is not None:
+            execution_metadata["registry_snapshot_id"] = self.registry_snapshot_id
+        if self.prompt_ref is not None:
+            execution_metadata["prompt_ref"] = self.prompt_ref.identity
+        if self.skill_refs:
+            execution_metadata["skill_refs"] = ",".join(
+                reference.identity for reference in self.skill_refs
+            )
         if execution.event_id is not None:
             execution_metadata["event_id"] = execution.event_id
         if execution.trigger_id is not None:
@@ -761,9 +800,8 @@ class AgentRuntime:
                     request_id=self._id("provider_request"),
                     context=context,
                     execution=execution,
-                    capabilities=[
-                        capability.model_copy(deep=True) for capability in self.capabilities
-                    ],
+                    prompt=self.prompt.model_copy(deep=True) if self.prompt is not None else None,
+                    skills=[skill.model_copy(deep=True) for skill in self.skills],
                     tools=self._visible_tool_descriptors(execution),
                 )
                 trace.record(
@@ -813,7 +851,8 @@ class AgentRuntime:
                 request_id=self._id("provider_request"),
                 context=context,
                 execution=execution,
-                capabilities=[capability.model_copy(deep=True) for capability in self.capabilities],
+                prompt=self.prompt.model_copy(deep=True) if self.prompt is not None else None,
+                skills=[skill.model_copy(deep=True) for skill in self.skills],
                 tools=self._visible_tool_descriptors(execution),
                 interpretation=interpretation,
             )
@@ -825,15 +864,8 @@ class AgentRuntime:
                 )
                 invocation = self._invoke_provider(
                     operation=ProviderOperation.PLAN,
-                    call=lambda: self._call_provider_operation(
-                        method=cast(Callable[..., object], self.provider.plan),
-                        request=planning_request,
-                        legacy_kwargs={
-                            "context": planning_request.context,
-                            "execution": planning_request.execution,
-                            "capabilities": planning_request.capabilities,
-                            "tools": planning_request.tools,
-                        },
+                    call=lambda: cast(Callable[..., object], self.provider.plan)(
+                        request=planning_request
                     ),
                     control=control,
                 )
@@ -1518,15 +1550,8 @@ class AgentRuntime:
             )
             invocation = self._invoke_provider(
                 operation=ProviderOperation.COMPOSE,
-                call=lambda: self._call_provider_operation(
-                    method=cast(Callable[..., object], self.provider.compose),
-                    request=composition_request,
-                    legacy_kwargs={
-                        "context": composition_request.context,
-                        "execution": composition_request.execution,
-                        "plan": composition_request.plan,
-                        "tool_results": composition_request.tool_results,
-                    },
+                call=lambda: cast(Callable[..., object], self.provider.compose)(
+                    request=composition_request
                 ),
                 control=control,
             )
@@ -1733,14 +1758,6 @@ class AgentRuntime:
                 tool=tool,
                 reason_code="tool_not_authorized",
             )
-        if self.capabilities and tool.tool_id not in self._capability_tool_ids:
-            return self._deny_permission(
-                permission=permission,
-                principal=principal,
-                execution=execution,
-                tool=tool,
-                reason_code="tool_not_in_capability",
-            )
         if set(tool.required_permissions).difference(execution.granted_permissions):
             return self._deny_permission(
                 permission=permission,
@@ -1856,25 +1873,6 @@ class AgentRuntime:
             resource_type=resource.resource_type if resource is not None else None,
             resource_id=resource.resource_id if resource is not None else None,
         )
-
-    @staticmethod
-    def _call_provider_operation(
-        *,
-        method: Callable[..., object],
-        request: object,
-        legacy_kwargs: dict[str, object],
-    ) -> object:
-        """Call the request contract and retain compatibility with Phase 0A providers."""
-
-        try:
-            parameters = signature(method).parameters
-        except (TypeError, ValueError):
-            accepts_request = True
-        else:
-            accepts_request = "request" in parameters or any(
-                parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters.values()
-            )
-        return method(request=request) if accepts_request else method(**legacy_kwargs)
 
     def _provider_failure(
         self,
@@ -2239,6 +2237,11 @@ class AgentRuntime:
             cost_model=self.cost_model,
             initial_trace=initial_trace,
             failure_reporter=self.failure_reporter,
+            manifest_id=self.manifest_id,
+            manifest_digest=self.manifest_digest,
+            registry_snapshot_id=self.registry_snapshot_id,
+            prompt_ref=self.prompt_ref,
+            skill_refs=self.skill_refs,
         )
         pending = _PendingApproval(
             principal=principal,
@@ -2497,7 +2500,8 @@ class AgentRuntime:
             execution=execution,
             input_text=input_text,
             state=state,
-            capabilities=self.capabilities,
+            prompt=self.prompt,
+            skills=self.skills,
             memory=memory,
             tool_results=tool_results,
         )
@@ -2519,12 +2523,9 @@ class AgentRuntime:
             self.tools.get(step.tool_id, step.tool_version)
 
     def _visible_tool_ids(self, execution: ExecutionContext) -> tuple[str, ...]:
-        """Return the intersection of caller authority and capability scope."""
+        """Return the exact tools authorized for this execution."""
 
-        authorized = set(execution.authorized_tool_ids)
-        if not self.capabilities:
-            return tuple(sorted(authorized))
-        return tuple(sorted(authorized.intersection(self._capability_tool_ids)))
+        return tuple(sorted(set(execution.authorized_tool_ids)))
 
     def _visible_tool_descriptors(self, execution: ExecutionContext) -> list[ToolDescriptor]:
         """Return only exact tool versions visible to the provider proposal boundary."""
@@ -2685,6 +2686,11 @@ class AgentRuntime:
             principal=principal,
             execution_id=execution.execution_id,
             agent_id=execution.agent_id,
+            manifest_id=self.manifest_id,
+            manifest_digest=self.manifest_digest,
+            registry_snapshot_id=self.registry_snapshot_id,
+            prompt_ref=self.prompt_ref,
+            skill_refs=self.skill_refs,
             correlation_id=execution.correlation_id,
             parent_execution_id=execution.parent_execution_id,
             delegation_id=execution.delegation_id,

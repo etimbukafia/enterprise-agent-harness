@@ -10,7 +10,14 @@ from typing import Protocol
 
 from pydantic import Field, model_validator
 
-from ..contracts import ContractModel, OutcomeStatus, PrincipalContext, SafetyFlag
+from ..contracts import (
+    ComponentReference,
+    ComponentType,
+    ContractModel,
+    OutcomeStatus,
+    PrincipalContext,
+    SafetyFlag,
+)
 from .failures import (
     ListObservabilityFailureReporter,
     ObservabilityFailureReporter,
@@ -28,6 +35,11 @@ class AuditEvent(ContractModel):
     occurred_at: datetime
     execution_id: str = Field(min_length=1)
     agent_id: str = Field(min_length=1)
+    manifest_id: str | None = Field(default=None, min_length=1)
+    manifest_digest: str | None = Field(default=None, min_length=1)
+    registry_snapshot_id: str | None = Field(default=None, min_length=1)
+    prompt_ref: ComponentReference | None = None
+    skill_refs: tuple[ComponentReference, ...] = ()
     principal_id: str = Field(min_length=1)
     tenant_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
@@ -52,6 +64,10 @@ class AuditEvent(ContractModel):
             raise ValueError("root audit event cannot have a delegation depth")
         if self.parent_execution_id is not None and self.delegation_depth < 1:
             raise ValueError("delegated audit event must have a positive delegation depth")
+        if self.prompt_ref is not None and self.prompt_ref.component_type != ComponentType.PROMPT:
+            raise ValueError("audit prompt_ref must have component_type=prompt")
+        if any(reference.component_type != ComponentType.SKILL for reference in self.skill_refs):
+            raise ValueError("audit skill_refs must have component_type=skill")
         return self
 
 
@@ -103,6 +119,11 @@ class AuditLogger:
         principal: PrincipalContext,
         execution_id: str,
         agent_id: str,
+        manifest_id: str | None = None,
+        manifest_digest: str | None = None,
+        registry_snapshot_id: str | None = None,
+        prompt_ref: ComponentReference | None = None,
+        skill_refs: tuple[ComponentReference, ...] | list[ComponentReference] = (),
         correlation_id: str = "root",
         parent_execution_id: str | None = None,
         delegation_id: str | None = None,
@@ -129,6 +150,11 @@ class AuditLogger:
             occurred_at=self._clock(),
             execution_id=execution_id,
             agent_id=agent_id,
+            manifest_id=manifest_id,
+            manifest_digest=manifest_digest,
+            registry_snapshot_id=registry_snapshot_id,
+            prompt_ref=prompt_ref.model_copy(deep=True) if prompt_ref is not None else None,
+            skill_refs=tuple(reference.model_copy(deep=True) for reference in skill_refs),
             principal_id=principal.principal_id,
             tenant_id=principal.tenant_id,
             session_id=principal.session_id,

@@ -9,7 +9,6 @@ from enterprise_agent_harness import (
     AgentPlan,
     AgentRuntime,
     BoundedMemory,
-    CapabilityDefinition,
     CompiledContext,
     ContextBlockType,
     ContextCompiler,
@@ -28,6 +27,7 @@ from enterprise_agent_harness import (
     RiskLevel,
     RuntimeConfig,
     SafetyFlag,
+    SkillDefinition,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
@@ -212,7 +212,7 @@ def test_source_parity_permission_denial_happens_before_handler_execution() -> N
     assert called is False
 
 
-def test_capability_scope_and_permission_requirements_cannot_be_bypassed_by_provider() -> None:
+def test_skill_metadata_and_permission_requirements_cannot_bypass_authority() -> None:
     called = False
 
     def handler(_context, arguments):
@@ -239,23 +239,23 @@ def test_capability_scope_and_permission_requirements_cannot_be_bypassed_by_prov
     runtime = AgentRuntime(
         tools=ToolRegistry([lookup_tool(handler, required_permissions=("records:read",))]),
         provider=FixedProvider(),
-        capabilities=[
-            CapabilityDefinition(
-                capability_id="records",
-                version="1",
+        skills=[
+            SkillDefinition(
+                skill_id="records",
+                version="1.0.0",
+                name="Record lookup",
                 description="Review records.",
-                supported_operations=["lookup"],
-                allowed_tool_ids=[],
+                supported_operations=("lookup",),
             )
         ],
     )
-    denied_by_capability = runtime.execute(
+    denied_by_skill_metadata = runtime.execute(
         principal(),
         "run the lookup",
-        authorized_tool_ids=["lookup"],
+        authorized_tool_ids=[],
         granted_permissions=["records:read"],
     )
-    assert denied_by_capability.status == OutcomeStatus.REFUSED
+    assert denied_by_skill_metadata.status == OutcomeStatus.REFUSED
     assert called is False
 
     runtime = AgentRuntime(

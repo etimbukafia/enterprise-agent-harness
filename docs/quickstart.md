@@ -27,6 +27,8 @@ from enterprise_agent_harness import (
     AgentRegistry,
     AgentTemplate,
     AgentVersion,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     ListAuditSink,
     ListTraceSink,
@@ -36,10 +38,13 @@ from enterprise_agent_harness import (
     PolicyRule,
     PrincipalContext,
     ProviderProfile,
+    PromptDefinition,
+    PromptRegistry,
+    SkillDefinition,
+    SkillRegistry,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 
 
@@ -66,6 +71,35 @@ tool = ToolDefinition(
     owner_id="example-team",
 )
 tools = ToolRegistry([tool])
+prompts = PromptRegistry(
+    [
+        PromptDefinition(
+            prompt_id="records-prompt",
+            version="1.0.0",
+            purpose="Review records safely.",
+            instructions="Use the configured skill and report verified results.",
+            owner_id="example-team",
+        )
+    ]
+)
+skills = SkillRegistry(
+    [
+        SkillDefinition(
+            skill_id="records-review",
+            version="1.0.0",
+            name="Record review",
+            description="Read one record for review.",
+            required_tool_refs=(
+                ComponentReference(
+                    component_type=ComponentType.TOOL,
+                    component_id=tool.tool_id,
+                    version=tool.version,
+                ),
+            ),
+        )
+    ],
+    tools=tools,
+)
 policy = PolicyDefinition(
     policy_id="records-policy",
     version="1.0.0",
@@ -80,7 +114,12 @@ policy = PolicyDefinition(
     ],
     lifecycle=AgentLifecycleStatus.ACTIVE,
 )
-registry = AgentRegistry(tools=tools, policies=[policy])
+registry = AgentRegistry(
+    prompts=prompts,
+    skills=skills,
+    tools=tools,
+    policies=[policy],
+)
 factory = AgentFactory(
     agent_registry=registry,
     providers={
@@ -92,8 +131,32 @@ factory = AgentFactory(
 config = AgentConfig(
     identity=AgentVersion(agent_id="records-analyst", version="1.0.0"),
     goal="Review records.",
-    allowed_tools=[VersionReference(component_id=tool.tool_id, version="1.0.0")],
-    policies=[VersionReference(component_id=policy.policy_id, version="1.0.0")],
+    prompt_ref=ComponentReference(
+        component_type=ComponentType.PROMPT,
+        component_id="records-prompt",
+        version="1.0.0",
+    ),
+    skill_refs=[
+        ComponentReference(
+            component_type=ComponentType.SKILL,
+            component_id="records-review",
+            version="1.0.0",
+        )
+    ],
+    tool_refs=[
+        ComponentReference(
+            component_type=ComponentType.TOOL,
+            component_id=tool.tool_id,
+            version="1.0.0",
+        )
+    ],
+    policy_refs=[
+        ComponentReference(
+            component_type=ComponentType.POLICY,
+            component_id=policy.policy_id,
+            version="1.0.0",
+        )
+    ],
     provider_profile=ProviderProfile(
         provider_id="deterministic",
         version="1.0.0",

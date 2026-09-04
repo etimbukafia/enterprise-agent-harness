@@ -14,8 +14,8 @@ from enterprise_agent_harness import (
     AgentRegistry,
     AgentTemplate,
     AgentVersion,
-    CapabilityDefinition,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     EvaluationEvidence,
     EvaluationExecutionInput,
@@ -27,13 +27,16 @@ from enterprise_agent_harness import (
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
+    PromptDefinition,
+    PromptRegistry,
     ProviderProfile,
     RecordedReplayAdapter,
     RiskLevel,
+    SkillDefinition,
+    SkillRegistry,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
-    VersionReference,
     execute_test_case,
 )
 
@@ -87,16 +90,23 @@ def _factory(handler_calls: list[str]) -> AgentFactory:
         owner_id="records-team",
     )
     tools = ToolRegistry([tool])
-    capabilities = CapabilityRegistry(tools=tools)
-    capabilities.register(
-        CapabilityDefinition(
-            capability_id="record-review",
+    skills = SkillRegistry(tools=tools)
+    skills.register(
+        SkillDefinition(
+            skill_id="record-review",
             version="1.0.0",
+            name="Record review",
             description="Review records.",
-            supported_operations=["read"],
-            supported_intents=["review_records"],
-            supported_languages=["en"],
-            allowed_tool_ids=["records-read"],
+            supported_operations=("read",),
+            supported_intents=("review_records",),
+            supported_languages=("en",),
+            required_tool_refs=(
+                ComponentReference(
+                    component_type=ComponentType.TOOL,
+                    component_id="records-read",
+                    version="1.0.0",
+                ),
+            ),
             risk_level=RiskLevel.LOW,
             owner_id="records-team",
             lifecycle=AgentLifecycleStatus.ACTIVE,
@@ -116,7 +126,22 @@ def _factory(handler_calls: list[str]) -> AgentFactory:
         ],
         lifecycle=AgentLifecycleStatus.ACTIVE,
     )
-    registry = AgentRegistry(capabilities=capabilities, tools=tools, policies=[policy])
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="records-prompt",
+                version="1.0.0",
+                purpose="Review records safely.",
+                instructions="Use the record review skill.",
+            )
+        ]
+    )
+    registry = AgentRegistry(
+        prompts=prompts,
+        skills=skills,
+        tools=tools,
+        policies=[policy],
+    )
     return AgentFactory(
         agent_registry=registry,
         providers={("deterministic", "1.0.0"): DeterministicProvider(tool_id="records-read")},
@@ -131,9 +156,32 @@ def _config(version: str) -> AgentConfig:
         goal="Review records and report approved findings.",
         supported_intents=["review_records"],
         supported_languages=["en"],
-        capabilities=[VersionReference(component_id="record-review", version="1.0.0")],
-        allowed_tools=[VersionReference(component_id="records-read", version="1.0.0")],
-        policies=[VersionReference(component_id="records-policy", version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id="record-review",
+                version="1.0.0",
+            )
+        ],
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            )
+        ],
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id="records-policy",
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",

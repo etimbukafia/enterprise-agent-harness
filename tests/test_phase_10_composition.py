@@ -11,7 +11,8 @@ from enterprise_agent_harness import (
     AgentFactory,
     AgentRegistry,
     AgentVersion,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     CompositionDefinition,
     CompositionPattern,
     CompositionStep,
@@ -26,13 +27,14 @@ from enterprise_agent_harness import (
     ListTraceSink,
     OutcomeStatus,
     PrincipalContext,
+    PromptDefinition,
+    PromptRegistry,
     ProviderProfile,
     RiskLevel,
     RuntimeConfig,
     ToolDefinition,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 
 
@@ -78,8 +80,18 @@ def make_factory() -> tuple[AgentFactory, ListTraceSink, ListAuditSink]:
             ),
         ]
     )
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="composition-prompt",
+                version="1.0.0",
+                purpose="Compose a bounded operation.",
+                instructions="Use the explicitly authorized tools.",
+            )
+        ]
+    )
     registry = AgentRegistry(
-        capabilities=CapabilityRegistry(tools=tools),
+        prompts=prompts,
         tools=tools,
     )
     traces = ListTraceSink()
@@ -100,7 +112,18 @@ def config(agent_id: str, tool_id: str = "records-read") -> AgentConfig:
     return AgentConfig(
         identity=AgentVersion(agent_id=agent_id, version="1.0.0"),
         goal=f"Operate as {agent_id}.",
-        allowed_tools=[VersionReference(component_id=tool_id, version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="composition-prompt",
+            version="1.0.0",
+        ),
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id=tool_id,
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",

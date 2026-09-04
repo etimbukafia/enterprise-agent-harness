@@ -8,6 +8,8 @@ from typing import Any, Literal, Protocol, Self, TypeVar
 from pydantic import Field, JsonValue, model_validator
 
 from ..contracts import (
+    ComponentReference,
+    ComponentType,
     ContractModel,
     ExecutionMetrics,
     OutcomeStatus,
@@ -51,6 +53,11 @@ class RunTrace(ContractModel):
     tenant_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     input_fingerprint: str = Field(min_length=1)
+    manifest_id: str | None = Field(default=None, min_length=1)
+    manifest_digest: str | None = Field(default=None, min_length=1)
+    registry_snapshot_id: str | None = Field(default=None, min_length=1)
+    prompt_ref: ComponentReference | None = None
+    skill_refs: tuple[ComponentReference, ...] = ()
     correlation_id: str = Field(default="root", min_length=1)
     parent_execution_id: str | None = Field(default=None, min_length=1)
     delegation_id: str | None = Field(default=None, min_length=1)
@@ -81,6 +88,10 @@ class RunTrace(ContractModel):
             raise ValueError("delegated trace must have a positive delegation depth")
         if len(self.delegation_path) != len(set(self.delegation_path)):
             raise ValueError("delegation_path must not contain duplicates")
+        if self.prompt_ref is not None and self.prompt_ref.component_type != ComponentType.PROMPT:
+            raise ValueError("trace prompt_ref must have component_type=prompt")
+        if any(reference.component_type != ComponentType.SKILL for reference in self.skill_refs):
+            raise ValueError("trace skill_refs must have component_type=skill")
         return self
 
 

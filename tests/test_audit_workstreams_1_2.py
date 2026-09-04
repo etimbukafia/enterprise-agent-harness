@@ -15,8 +15,8 @@ from enterprise_agent_harness import (
     AgentRegistry,
     AgentTemplate,
     AgentVersion,
-    CapabilityDefinition,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     ExecutionContext,
     FactoryAuthorizationError,
@@ -25,14 +25,17 @@ from enterprise_agent_harness import (
     PolicyEffect,
     PolicyRule,
     PrincipalContext,
+    PromptDefinition,
+    PromptRegistry,
     ProviderProfile,
     RiskLevel,
     RuntimeConfig,
+    SkillDefinition,
+    SkillRegistry,
     ToolDefinition,
     ToolInvocationError,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 
 
@@ -66,15 +69,22 @@ def make_tool(
     )
 
 
-def make_capability() -> CapabilityDefinition:
-    return CapabilityDefinition(
-        capability_id="record-review",
+def make_skill() -> SkillDefinition:
+    return SkillDefinition(
+        skill_id="record-review",
         version="1.0.0",
+        name="Record review",
         description="Review records.",
-        supported_operations=["read"],
-        supported_intents=["review_records"],
-        supported_languages=["en"],
-        allowed_tool_ids=["records-read"],
+        supported_operations=("read",),
+        supported_intents=("review_records",),
+        supported_languages=("en",),
+        required_tool_refs=(
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            ),
+        ),
         risk_level=RiskLevel.LOW,
         owner_id="records-team",
         lifecycle=AgentLifecycleStatus.ACTIVE,
@@ -104,9 +114,32 @@ def make_agent(*, lifecycle: AgentLifecycleStatus = AgentLifecycleStatus.DRAFT) 
         goal="Review records.",
         supported_intents=["review_records"],
         supported_languages=["en"],
-        capabilities=[VersionReference(component_id="record-review", version="1.0.0")],
-        allowed_tools=[VersionReference(component_id="records-read", version="1.0.0")],
-        policies=[VersionReference(component_id="records-policy", version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id="record-review",
+                version="1.0.0",
+            )
+        ],
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            )
+        ],
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id="records-policy",
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
@@ -125,9 +158,32 @@ def make_config() -> AgentConfig:
         goal="Review records.",
         supported_intents=["review_records"],
         supported_languages=["en"],
-        capabilities=[VersionReference(component_id="record-review", version="1.0.0")],
-        allowed_tools=[VersionReference(component_id="records-read", version="1.0.0")],
-        policies=[VersionReference(component_id="records-policy", version="1.0.0")],
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id="records-prompt",
+            version="1.0.0",
+        ),
+        skill_refs=[
+            ComponentReference(
+                component_type=ComponentType.SKILL,
+                component_id="record-review",
+                version="1.0.0",
+            )
+        ],
+        tool_refs=[
+            ComponentReference(
+                component_type=ComponentType.TOOL,
+                component_id="records-read",
+                version="1.0.0",
+            )
+        ],
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id="records-policy",
+                version="1.0.0",
+            )
+        ],
         provider_profile=ProviderProfile(
             provider_id="deterministic",
             version="1.0.0",
@@ -202,29 +258,40 @@ def test_tool_registry_lifecycle_changes_are_audited_and_terminal_states_cannot_
     ]
 
 
-def test_capability_and_agent_snapshots_track_tool_registry_revision() -> None:
+def test_skill_and_agent_snapshots_track_tool_registry_revision() -> None:
     tools = ToolRegistry([make_tool()])
-    capabilities = CapabilityRegistry(tools=tools)
-    capabilities.register(make_capability())
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="records-prompt",
+                version="1.0.0",
+                purpose="Review records.",
+                instructions="Use the record review skill.",
+            )
+        ]
+    )
+    skills = SkillRegistry(tools=tools)
+    skills.register(make_skill())
     agents = AgentRegistry(
-        capabilities=capabilities,
+        prompts=prompts,
+        skills=skills,
         tools=tools,
         policies=[make_policy()],
     )
     agents.register(make_agent())
     agents.activate("records-agent", "1.0.0")
 
-    capability_before = capabilities.snapshot()
+    skill_before = skills.snapshot()
     agent_before = agents.snapshot()
     tools.disable("records-read", "1.0.0")
-    capability_after = capabilities.snapshot()
+    skill_after = skills.snapshot()
     agent_after = agents.snapshot()
 
-    assert capability_after.tool_registry_revision == tools.revision
+    assert skill_after.tool_registry_revision == tools.revision
     assert agent_after.tool_registry_revision == tools.revision
-    assert capability_after.tool_registry_revision > capability_before.tool_registry_revision
+    assert skill_after.tool_registry_revision > skill_before.tool_registry_revision
     assert agent_after.tool_registry_revision > agent_before.tool_registry_revision
-    assert capability_after.revision > capability_before.revision
+    assert skill_after.revision > skill_before.revision
     assert agent_after.revision > agent_before.revision
 
 
@@ -237,10 +304,21 @@ def test_manifest_tampering_fails_before_provider_or_tool_execution() -> None:
         return Output(value=arguments.value)
 
     tools = ToolRegistry([make_tool(handler=handler)])
-    capabilities = CapabilityRegistry(tools=tools)
-    capabilities.register(make_capability())
+    prompts = PromptRegistry(
+        [
+            PromptDefinition(
+                prompt_id="records-prompt",
+                version="1.0.0",
+                purpose="Review records.",
+                instructions="Use the record review skill.",
+            )
+        ]
+    )
+    skills = SkillRegistry(tools=tools)
+    skills.register(make_skill())
     registry = AgentRegistry(
-        capabilities=capabilities,
+        prompts=prompts,
+        skills=skills,
         tools=tools,
         policies=[make_policy()],
     )
@@ -252,7 +330,11 @@ def test_manifest_tampering_fails_before_provider_or_tool_execution() -> None:
     built = factory.build(make_config())
     original_digest = built.manifest.manifest_digest
 
-    built.manifest.agent.allowed_tools[0].version = "2.0.0"
+    built.manifest.agent.tool_refs[0] = ComponentReference(
+        component_type=ComponentType.TOOL,
+        component_id="records-read",
+        version="2.0.0",
+    )
 
     with pytest.raises(FactoryAuthorizationError, match="integrity"):
         built.execute(make_principal(), "review record-1")

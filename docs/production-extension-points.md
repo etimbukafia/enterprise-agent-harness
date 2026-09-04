@@ -8,6 +8,7 @@ a production queue, database, identity service, or deployment system.
 | Boundary | Library contract | Consumer responsibility |
 | --- | --- | --- |
 | Provider | `ProviderAdapter` | Connect a model service. Keep provider output as proposal data. |
+| Prompt and skill artifacts | `PromptDefinition`, `PromptRegistry`, `SkillDefinition`, and `SkillRegistry` | Publish immutable behavioral artifacts and exact tool references. Keep executable authority in each agent's explicit `tool_refs`. |
 | Tool | `ToolDefinition` and `ToolRegistry` | Implement typed domain tools. Set risk, permission, approval, and idempotency fields. |
 | Permission and policy | `PermissionBroker`, `PolicyDefinition`, and `ResourcePolicyHook` | Supply identity, resource facts, and business policy. |
 | Approval | `ApprovalBroker` and `ApprovalPolicy` | Store requests, obtain reviewer decisions, and keep reviewer authority. |
